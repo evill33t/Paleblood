@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Default, unnamed rwlock lifecycle only. The guest owns an eight-byte pointer slot;
+/* Default, unnamed rwlock lifecycle and nonrecursive writer operations. The guest owns
+   an eight-byte pointer slot;
    the allocated host object is private and does not reproduce a console object layout. */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,7 +15,49 @@ _Static_assert(sizeof(void *) == 8, "guest rwlock handles require 64-bit pointer
 
 typedef struct {
     pthread_rwlock_t host;
+    _Atomic(uintptr_t) writer;
 } guest_rwlock;
+
+/* Host-thread identity only: no guest TLS layout, pthread_t encoding or GS/FS changes.
+   A thread must unlock before exit; calls are not reentrant on the same host thread. */
+static _Thread_local unsigned char writer_identity;
+
+static guest_rwlock *initialized_lock(void *slot, const char *caller)
+{
+    uint64_t handle;
+    memcpy(&handle, slot, sizeof handle);
+    if (!handle) rt_fatal(caller, "lazy initialization is not implemented");
+    if (handle == 1) rt_fatal(caller, "destroyed-handle diagnostic behavior is not implemented");
+    return (guest_rwlock *)(uintptr_t)handle;
+}
+
+static int rwlock_wrlock(void *slot)
+{
+    guest_rwlock *lock = initialized_lock(slot, "scePthreadRwlockWrlock");
+    const uintptr_t self = (uintptr_t)&writer_identity;
+    if (atomic_load(&lock->writer) == self)
+        rt_fatal("scePthreadRwlockWrlock", "recursive write locking is not implemented");
+    /* Host blocking/contention behavior is port policy; no console fairness is claimed. */
+    if (pthread_rwlock_wrlock(&lock->host) != 0)
+        rt_fatal("scePthreadRwlockWrlock", "host write locking failed; error translation is not established");
+    atomic_store(&lock->writer, self);
+    return 0;
+}
+
+static int rwlock_unlock(void *slot)
+{
+    guest_rwlock *lock = initialized_lock(slot, "scePthreadRwlockUnlock");
+    const uintptr_t self = (uintptr_t)&writer_identity;
+    if (atomic_load(&lock->writer) != self)
+        rt_fatal("scePthreadRwlockUnlock", "only the recorded writer's unlock is implemented");
+    if (pthread_rwlock_unlock(&lock->host) != 0)
+        rt_fatal("scePthreadRwlockUnlock", "host unlocking failed; error translation is not established");
+    /* A next writer may have acquired and published its token before this thread resumes.
+       Clear only our old token, never that next writer's record. */
+    uintptr_t expected = self;
+    (void)atomic_compare_exchange_strong(&lock->writer, &expected, 0);
+    return 0;
+}
 
 static int rwlock_init(void *slot, const void *attr, const char *name)
 {
@@ -24,6 +68,7 @@ static int rwlock_init(void *slot, const void *attr, const char *name)
 
     guest_rwlock *lock = calloc(1, sizeof *lock);
     if (!lock) return (int)UINT32_C(0x8002000c);
+    atomic_init(&lock->writer, 0);
     /* Default host attributes are a port policy, not console scheduling/fairness evidence. */
     if (pthread_rwlock_init(&lock->host, NULL) != 0) {
         free(lock); /* no initialized host lock or published guest handle exists */
@@ -48,6 +93,8 @@ static int rwlock_destroy(void *slot)
        On a host failure retain its reachable handle/allocation and stop. This error policy
        adds a host cleanup check; the recovered default console path has no busy check. */
     guest_rwlock *lock = (guest_rwlock *)(uintptr_t)handle;
+    if (atomic_load(&lock->writer) != 0)
+        rt_fatal("scePthreadRwlockDestroy", "destruction requires a quiescent object with no writer");
     if (pthread_rwlock_destroy(&lock->host) != 0)
         rt_fatal("scePthreadRwlockDestroy", "host destruction failed; handle retained, error translation is not established");
     const uint64_t destroyed = 1;
@@ -58,3 +105,6 @@ static int rwlock_destroy(void *slot)
 
 RT_SYSLIB("libkernel", scePthreadRwlockInit, rwlock_init);
 RT_SYSLIB("libkernel", scePthreadRwlockDestroy, rwlock_destroy);
+
+RT_SYSLIB("libkernel", scePthreadRwlockWrlock, rwlock_wrlock);
+RT_SYSLIB("libkernel", scePthreadRwlockUnlock, rwlock_unlock);
