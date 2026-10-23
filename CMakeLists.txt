@@ -16,6 +16,7 @@ add_compile_options(-Wall -Wextra -Werror)
 
 enable_testing()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Threads REQUIRED)
 add_subdirectory(runtime)
 add_subdirectory(game)
 
@@ -42,7 +43,20 @@ set_tests_properties(capture_poc_replay PROPERTIES
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
 add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB})
 target_include_directories(test_syslib PRIVATE runtime/include)
+target_link_libraries(test_syslib PRIVATE Threads::Threads)
 add_test(NAME syslib COMMAND test_syslib)
+
+# Narrow rwlock lifecycle tests; CHECKs remain active in optimized builds.
+add_executable(test_rwlock test/test_rwlock.c runtime/process.c
+               runtime/syslib/table.c runtime/syslib/kernel_rwlock.c)
+target_include_directories(test_rwlock PRIVATE runtime/include)
+target_link_libraries(test_rwlock PRIVATE Threads::Threads)
+add_test(NAME rwlock_lifecycle COMMAND test_rwlock)
+add_executable(test_rwlock_failures test/test_rwlock_failures.c)
+target_include_directories(test_rwlock_failures PRIVATE runtime/include)
+target_link_libraries(test_rwlock_failures PRIVATE Threads::Threads)
+add_test(NAME rwlock_failures COMMAND test_rwlock_failures)
+set_tests_properties(rwlock_lifecycle rwlock_failures PROPERTIES TIMEOUT 10)
 
 add_test(NAME tools COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/test -p "test_*.py" -v)
 set_tests_properties(tools PROPERTIES ENVIRONMENT "BB_LOADER=$<TARGET_FILE:pbloader>;BB_PBBOOT=$<TARGET_FILE:pbboot>")
