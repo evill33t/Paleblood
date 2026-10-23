@@ -52,3 +52,10 @@ hosts can request an address as a hint and release a result at another address. 
 replaces an existing mapping. The portable allocation primitive alone does not make `pbboot`
 build or execute guests on macOS; its thread state, signals and other boot dependencies still
 need platform support.
+
+## Owned Darwin startup
+
+The explicit x86-64 macOS boot target composes the owned pthread-key TCB with the bounded loader
+rewrite; its owned tests and remaining limits are in
+[Darwin startup](../docs/own-runtime-darwin-startup.md). The default macOS build remains the
+standalone Metal unit. This startup path does not connect guest graphics to Metal.

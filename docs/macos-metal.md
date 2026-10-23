@@ -3,8 +3,9 @@
 On macOS, CMake defaults to `PB_METAL_ONLY=ON`. This builds `pbmetal`, a native static library
 with a C API and an Objective-C++ implementation linked to Apple's Metal and Foundation
 frameworks. This path does not build `pbboot`, `pbloader`, `bbrt`, `bbgame` or the Linux tests.
-Turning `PB_METAL_ONLY` off on macOS fails with an explicit unsupported-runtime diagnostic.
-The full guest boot/runtime path currently requires Linux x86-64.
+The separate [owned Darwin startup path](own-runtime-darwin-startup.md) requires
+`PB_METAL_ONLY=OFF`, `PB_DARWIN_GUEST_BOOT=ON` and an explicit x86-64 architecture.
+That path does not connect guest graphics to Metal.
 
 The Metal unit creates a device, command queue and RGBA8Unorm offscreen texture, submits a
 render-pass clear/store, then reads pixels after command-buffer completion. This first
@@ -42,6 +43,6 @@ than silently creating unsupported targets. The existing Linux verification suit
 for the normal GCC and Clang builds.
 
 This native Metal library does not bridge ARM64 and x86-64 guest execution in one process.
-Own-runtime Darwin services, the engine's real render/resource contracts, shader support and
+Complete Darwin services, the engine's real render/resource contracts, shader support and
 a whole-code recompilation or separately established guest-execution strategy remain needed
 for gameplay. `MTKView`/`CAMetalLayer` presentation is a future unit, not part of this clear test.

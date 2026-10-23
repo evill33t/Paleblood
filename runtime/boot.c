@@ -34,7 +34,15 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#if defined(__APPLE__) && defined(__MACH__)
+#if !defined(__x86_64__)
+#error Darwin guest boot requires a whole-process x86-64 build.
+#endif
+#include "runtime/boot_darwin.h"
+#include <pthread.h>
+#else
 #include <asm/prctl.h>
+#endif
 #include <dlfcn.h>
 #include <errno.h>
 #include <setjmp.h>
@@ -44,8 +52,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#if !defined(__APPLE__)
 #include <sys/syscall.h>
+#endif
+#if defined(__APPLE__)
+#include <sys/ucontext.h>
+#else
 #include <ucontext.h>
+#endif
 #include <unistd.h>
 
 #define GUEST_BASE 0x800000000ull
@@ -91,7 +105,15 @@ static size_t object_count;
 enum outcome { RUNNING, UNIMPLEMENTED, FAULT, TIMEOUT, EXITED, RETURNED };
 static const char *const outcome_names[] = {"running", "unimplemented", "fault", "timeout", "exited", "returned"};
 
+#if defined(__APPLE__)
+/* Each owned execution scope initializes only this thread's recovery buffer. A fault on any
+   other host thread cannot jump across threads into the main guest stack. */
+static _Thread_local sigjmp_buf back_to_host;
+static _Thread_local volatile sig_atomic_t recovery_active;
+static volatile uint64_t returned_rax;
+#else
 static sigjmp_buf back_to_host;
+#endif
 static volatile enum outcome outcome = RUNNING;
 static volatile uint32_t stopped_at;            /* object << 20 | import index of the unimplemented call */
 static volatile uint64_t stopped_from;          /* the guest's return address of that call */
@@ -103,6 +125,9 @@ static volatile int exit_code;
 static __attribute__((noinline)) void unimplemented(uint32_t which)
 {
     /* the trampoline jumped here, so the return address is the guest's call site */
+#if defined(__APPLE__)
+    if (!recovery_active) rt_fatal("guest import", "no owned execution scope on this host thread");
+#endif
     stopped_from = (uint64_t)(uintptr_t)__builtin_return_address(0);
     stopped_at = which;
     outcome = UNIMPLEMENTED;
@@ -111,6 +136,9 @@ static __attribute__((noinline)) void unimplemented(uint32_t which)
 
 static void guest_exit(int code)
 {
+#if defined(__APPLE__)
+    if (!recovery_active) rt_fatal("guest exit", "no owned execution scope on this host thread");
+#endif
     exit_code = code;
     outcome = EXITED;
     siglongjmp(back_to_host, 1);
@@ -118,6 +146,14 @@ static void guest_exit(int code)
 
 static void on_signal(int sig, siginfo_t *info, void *context)
 {
+#if defined(__APPLE__)
+    if (!recovery_active) {
+        /* pbboot owns SIGALRM; a cancelled alarm arriving between execution scopes is ignored.
+           Other faults outside a prepared scope terminate instead of jumping to a stale buffer. */
+        if (sig == SIGALRM) return;
+        _exit(128 + sig);
+    }
+#endif
     const ucontext_t *uc = context;
     if (sig == SIGALRM) {
         outcome = TIMEOUT;
@@ -126,15 +162,24 @@ static void on_signal(int sig, siginfo_t *info, void *context)
         fault_signal = sig;
         fault_address = (uint64_t)(uintptr_t)info->si_addr;
     }
+#if defined(__APPLE__)
+    fault_rip = (uint64_t)uc->uc_mcontext->__ss.__rip;
+#else
     fault_rip = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
+#endif
     siglongjmp(back_to_host, 1);
 }
 
 /* Calls fn(a, b, c) on the guest stack: rt_boot_call(fn, a, stack_top, b, c). */
 uint64_t rt_boot_call(void *fn, void *a, void *stack_top, void *b, void *c);
+#if defined(__APPLE__)
+#define RT_BOOT_ASM_SYMBOL "_rt_boot_call"
+#else
+#define RT_BOOT_ASM_SYMBOL "rt_boot_call"
+#endif
 __asm__(".text\n"
-        ".globl rt_boot_call\n"
-        "rt_boot_call:\n"
+        ".globl " RT_BOOT_ASM_SYMBOL "\n"
+        RT_BOOT_ASM_SYMBOL ":\n"
         "  push %rbp\n  push %rbx\n  push %r12\n  push %r13\n  push %r14\n  push %r15\n"
         "  mov %rsp, %r12\n"
         "  mov %rdx, %rsp\n"
@@ -153,12 +198,106 @@ static __attribute__((noinline)) void run_guest(void *fn, void *a, void *b, void
 {
     outcome = RUNNING;
     if (!sigsetjmp(back_to_host, 1)) {
+#if defined(__APPLE__)
+        recovery_active = 1;
+        alarm((unsigned)timeout);
+        returned_rax = rt_boot_call(fn, a, stack_top, b, c);
+#else
         alarm((unsigned)timeout);
         rt_boot_call(fn, a, stack_top, b, c);
+#endif
         outcome = RETURNED;
     }
     alarm(0);
+#if defined(__APPLE__)
+    recovery_active = 0;
+#endif
 }
+
+#if defined(__APPLE__)
+static rt_boot_darwin_tls darwin_tls;
+static stack_t darwin_old_alt;
+static struct sigaction darwin_old_actions[6];
+static const int darwin_signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGALRM};
+static unsigned char darwin_alt[1 << 16];
+static size_t darwin_installed;
+static int darwin_alt_installed, darwin_cleanup_pending;
+
+/* Main-thread-only: all readers have stopped before resources, handlers and alt stack go away.
+   This cancels/drains pbboot's own pending alarm; it does not bound a stuck host POSIX call or
+   provide guest-created-thread/cross-thread signal routing. */
+static int darwin_cleanup(void)
+{
+    if (!darwin_cleanup_pending) return 0;
+    darwin_cleanup_pending = 0;
+    alarm(0);
+    sigset_t alarm_set, previous, pending;
+    int failed = sigemptyset(&alarm_set) || sigaddset(&alarm_set, SIGALRM);
+    const int blocked = !failed && pthread_sigmask(SIG_BLOCK, &alarm_set, &previous) == 0;
+    if (!blocked) failed = 1;
+    if (blocked) {
+        if (sigpending(&pending)) failed = 1;
+        else if (sigismember(&pending, SIGALRM) == 1) {
+            int received = 0;
+            if (sigwait(&alarm_set, &received) || received != SIGALRM) failed = 1;
+        }
+    }
+    if (rt_boot_darwin_tls_cleanup(&darwin_tls)) failed = 1;
+    while (darwin_installed) {
+        const size_t i = --darwin_installed;
+        if (sigaction(darwin_signals[i], &darwin_old_actions[i], NULL)) failed = 1;
+    }
+    if (darwin_alt_installed) {
+        stack_t restore = darwin_old_alt;
+        /* Darwin's saved disabled stack may have size zero. Supply the already accepted size
+           while preserving its pointer and SS_DISABLE flag. Enabled stacks restore exactly. */
+        if (restore.ss_flags & SS_DISABLE) restore.ss_size = sizeof darwin_alt;
+        if (sigaltstack(&restore, NULL)) failed = 1;
+        darwin_alt_installed = 0;
+    }
+    if (blocked && pthread_sigmask(SIG_SETMASK, &previous, NULL)) failed = 1;
+    fputs(failed ? "pbboot: Darwin owned TLS/signal cleanup incomplete\n"
+                 : "pbboot: Darwin owned TLS and signal state released\n", stderr);
+    return failed ? -1 : 0;
+}
+
+static void darwin_cleanup_at_exit(void)
+{
+    if (darwin_cleanup()) rt_fatal("Darwin startup cleanup", "owned resources could not be restored");
+}
+
+static int darwin_install_signals(void)
+{
+    darwin_cleanup_pending = 1;
+    if (atexit(darwin_cleanup_at_exit)) {
+        darwin_cleanup_pending = 0;
+        return -1;
+    }
+    if (sigaltstack(NULL, &darwin_old_alt) || (darwin_old_alt.ss_flags & SS_ONSTACK)) return -1;
+    stack_t alternate = {.ss_sp = darwin_alt, .ss_size = sizeof darwin_alt};
+    if (sigaltstack(&alternate, NULL)) return -1;
+    darwin_alt_installed = 1;
+    struct sigaction action = {0};
+    action.sa_sigaction = on_signal;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
+    if (sigemptyset(&action.sa_mask)) return -1;
+    for (size_t i = 0; i < sizeof darwin_signals / sizeof darwin_signals[0]; i++) {
+        if (sigaction(darwin_signals[i], &action, &darwin_old_actions[i])) return -1;
+        darwin_installed++;
+    }
+    return 0;
+}
+
+struct darwin_reader { void *stack_top; int timeout; };
+static int darwin_read_owned_slot(void *user, const void *code, uint64_t *value)
+{
+    const struct darwin_reader *reader = user;
+    run_guest((void *)code, NULL, NULL, NULL, reader->stack_top, reader->timeout);
+    if (outcome != RETURNED) return -1;
+    *value = returned_rax;
+    return 0;
+}
+#endif
 
 /* Each import's call goes through a trampoline: mark it called, then jump to the provider, or
    into unimplemented() with the object and import. r11 is scratch in the System V convention and
@@ -466,7 +605,9 @@ int main(int argc, char **argv)
             fprintf(stderr, "pbboot: %s\n", error);
             return 3;
         }
+#if !defined(__APPLE__)
         rt_elf_thread_pointer_to_gs(o->elf, o->image);
+#endif
     }
     uint64_t proc_param_size;
     const uint64_t proc_param = rt_elf_proc_param(objects[0].elf, &proc_param_size);
@@ -474,7 +615,11 @@ int main(int argc, char **argv)
     rt_process.image_size = objects[0].size;
     rt_process.proc_param = proc_param_size ? objects[0].image + proc_param : NULL;
 
+#if defined(__APPLE__)
+    unsigned char *stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#else
     unsigned char *stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+#endif
     if (stack == MAP_FAILED) {
         fprintf(stderr, "pbboot: cannot map the stack: %s\n", strerror(errno));
         return 3;
@@ -483,6 +628,29 @@ int main(int argc, char **argv)
     /* Thread pointer (x86-64 variant II): the executable's TLS block just below the thread control
        block, whose first word points to itself. Modules reach their TLS through __tls_get_addr. */
     const rt_elf_tls *tls = rt_elf_tls_segment(objects[0].elf);
+#if defined(__APPLE__)
+    if (darwin_install_signals()) {
+        fputs("pbboot: cannot install owned Darwin signal recovery\n", stderr);
+        return 3;
+    }
+    struct darwin_reader reader = {stack + STACK_SIZE - 64, timeout};
+    if (rt_boot_darwin_tls_prepare(&darwin_tls, tls, objects[0].image, (size_t)objects[0].size,
+                                   darwin_read_owned_slot, &reader, error, sizeof error)) {
+        fprintf(stderr, "pbboot: Darwin guest TLS: %s\n", error);
+        return 3;
+    }
+    size_t rewritten = 0;
+    for (size_t k = 0; k < object_count; k++) {
+        size_t changed;
+        if (rt_elf_thread_pointer_to_gs_offset(objects[k].elf, objects[k].image, darwin_tls.offset, &changed)) {
+            fputs("pbboot: cannot rewrite bounded guest TLS pattern\n", stderr);
+            return 3;
+        }
+        rewritten += changed;
+    }
+    fprintf(stderr, "pbboot: Darwin main-thread TSD qualified; GS slot +%u; TLS patterns rewritten %zu\n",
+            darwin_tls.offset, rewritten);
+#else
     const uint64_t align = tls->align > 16 ? tls->align : 16;
     const uint64_t tls_size = (tls->memsz + align - 1) / align * align;
     unsigned char *tls_block = aligned_alloc(align, tls_size + 4096);
@@ -495,6 +663,7 @@ int main(int argc, char **argv)
         return 3;
     }
 
+#endif
     rt_thread_register_main(stack, STACK_SIZE);
     if (game_library_path) {
         /* Retain this library until process exit: installed jumps and optional probes refer to
@@ -519,6 +688,7 @@ int main(int argc, char **argv)
         }
     }
 
+#if !defined(__APPLE__)
     static unsigned char alt[1 << 16];
     stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt};
     sigaltstack(&ss, NULL);
@@ -528,6 +698,7 @@ int main(int argc, char **argv)
     static const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGALRM};
     for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) sigaction(signals[i], &sa, NULL);
 
+#endif
     unsigned char *stack_top = stack + STACK_SIZE - 64;
     /* Modules first, in the order given: entry(argument size 0, no arguments, no start override)
        runs the module's constructors and then its start function. */
@@ -679,5 +850,8 @@ int main(int argc, char **argv)
     }
     free(db);
     free(db_text);
+#if defined(__APPLE__)
+    if (darwin_cleanup()) return 3;
+#endif
     return 0;
 }

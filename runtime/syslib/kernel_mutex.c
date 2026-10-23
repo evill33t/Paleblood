@@ -55,14 +55,24 @@ static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
 
 static int mutex_create(guest_mutex **out, int type, int protocol)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    if (type == TYPE_ADAPTIVE) rt_fatal("mutex", "Darwin adaptive mutex policy is unsupported");
+#endif
     guest_mutex *m = malloc(sizeof *m);
     if (!m) return BSD_ENOMEM;
     pthread_mutexattr_t a;
     pthread_mutexattr_init(&a);
+#if defined(__APPLE__) && defined(__MACH__)
+    /* Darwin has no PTHREAD_MUTEX_ADAPTIVE_NP. The unsupported policy was rejected above. */
+    pthread_mutexattr_settype(&a, type == TYPE_RECURSIVE    ? PTHREAD_MUTEX_RECURSIVE
+                                  : type == TYPE_ERRORCHECK ? PTHREAD_MUTEX_ERRORCHECK
+                                                            : PTHREAD_MUTEX_NORMAL);
+#else
     pthread_mutexattr_settype(&a, type == TYPE_RECURSIVE    ? PTHREAD_MUTEX_RECURSIVE
                                   : type == TYPE_ERRORCHECK ? PTHREAD_MUTEX_ERRORCHECK
                                   : type == TYPE_ADAPTIVE   ? PTHREAD_MUTEX_ADAPTIVE_NP
                                                             : PTHREAD_MUTEX_NORMAL);
+#endif
     if (protocol == 1) pthread_mutexattr_setprotocol(&a, PTHREAD_PRIO_INHERIT);
     else if (protocol == 2) pthread_mutexattr_setprotocol(&a, PTHREAD_PRIO_PROTECT);
     const int r = pthread_mutex_init(&m->host, &a);

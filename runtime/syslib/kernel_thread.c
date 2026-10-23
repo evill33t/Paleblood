@@ -64,6 +64,13 @@ rt_cpu_status rt_thread_register_main_cpu(void *stack, uint64_t stack_size, rt_c
 
 void rt_thread_register_main(void *stack, uint64_t stack_size)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    if (main_registered) rt_fatal("main-thread identity", "already registered");
+    main_thread = (guest_thread){.stack = stack, .stack_size = stack_size};
+    current = &main_thread;
+    main_registered = 1;
+    fputs("runtime: Darwin main-thread identity registered; native CPU affinity is unsupported\n", stderr);
+#else
     const rt_cpu_status status = rt_thread_register_main_cpu(stack, stack_size, rt_cpu_query_native,
                                                             NULL, getenv("BB_RUNTIME_CPU_MAP"));
     if (status != RT_CPU_OK) rt_fatal("main-thread CPU topology", rt_cpu_status_message(status));
@@ -71,6 +78,7 @@ void rt_thread_register_main(void *stack, uint64_t stack_size)
     for (size_t i = 0; i < main_topology.count; i++)
         fprintf(stderr, " %zu=%u", i, main_topology.host[i]);
     fputs("; port policy, not a console affinity measurement\n", stderr);
+#endif
 }
 
 static guest_thread *thread_self(void)
@@ -132,6 +140,9 @@ static int attr_get(guest_thread *thread, guest_attr **attr)
     if (!thread || !attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
     if (!main_registered || thread != &main_thread || current != &main_thread)
         rt_fatal("scePthreadAttrGet", "affinity queries currently support only the calling registered main thread");
+#if defined(__APPLE__) && defined(__MACH__)
+    rt_fatal("scePthreadAttrGet", "Darwin native CPU affinity backend is unsupported");
+#endif
     uint64_t mask;
     const rt_cpu_status status = rt_cpu_topology_read(&main_topology, &mask);
     if (status != RT_CPU_OK) rt_fatal("scePthreadAttrGet", rt_cpu_status_message(status));

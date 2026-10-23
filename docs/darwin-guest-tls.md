@@ -3,7 +3,9 @@
 `runtime/guest_tls_darwin.c` owns a public pthread key and stores a caller-owned live guest TCB
 pointer on each participating host thread. Its C API is in `runtime/include/runtime/guest_tls.h`. It does not
 allocate a host/guest TCB, change GS base, write GS:0, install signal handlers or execute code.
-This foundation is not wired into `pbboot` and does not establish full guest TLS or Mac boot.
+The explicit [owned Darwin startup path](own-runtime-darwin-startup.md) uses this foundation
+after per-thread qualification. This storage API alone does not establish full guest TLS or
+original-game startup.
 
 Create requires a NULL handle. Bind accepts a non-NULL pointer; read returns the calling
 thread's public slot, including NULL when unbound. Clear is idempotent. Functions preserve

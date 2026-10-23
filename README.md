@@ -120,7 +120,9 @@ tools/install_hooks.sh
 ```
 
 A standalone [macOS Metal platform unit](docs/macos-metal.md) can also be built and tested
-on a Mac with a unified-memory GPU. It does not run the game yet.
+on a Mac with a unified-memory GPU. It does not run the game yet. The separate
+[owned Darwin startup path](docs/own-runtime-darwin-startup.md) builds `pbboot` as an explicit
+x86-64 process; guest graphics are not connected to Metal.
 
 [docs/ONBOARDING.md](docs/ONBOARDING.md) goes from your own dump to your first pull request:
 preparing the dump (`tools/prepare_dump.sh`), Ghidra with the GhidraOrbis loader

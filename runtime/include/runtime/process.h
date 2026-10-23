@@ -37,7 +37,9 @@ extern rt_process_info rt_process;
 /* Registers the calling host thread as the guest's main thread. Before guest execution this
    fixes an own-runtime CPU mapping from all actually allowed host CPUs, and reports it. Optional
    BB_RUNTIME_CPU_MAP is an ordered decimal permutation of that full set. Unrepresentable or
-   unsupported configurations stop by name; this policy is not a measured console CPU mask. */
+   unsupported configurations stop by name; this policy is not a measured console CPU mask.
+   Darwin startup registers only the calling thread's owned identity/stack. It supplies no CPU
+   mapping; scePthreadAttrGet stops by name until a real Darwin provider exists. */
 void rt_thread_register_main(void *stack, uint64_t stack_size);
 
 /* Embedding/testing form with a caller-owned provider context (lifetime: whole guest run).
