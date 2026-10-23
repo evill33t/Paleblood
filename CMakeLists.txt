@@ -81,6 +81,18 @@ add_test(NAME direct_memory_timeout COMMAND test_direct_memory_timeout)
 set_tests_properties(direct_memory_timeout PROPERTIES TIMEOUT 10)
 
 
+# Narrow rwlock lifecycle tests; CHECKs remain active in optimized builds.
+add_executable(test_rwlock test/test_rwlock.c runtime/process.c
+               runtime/syslib/table.c runtime/syslib/kernel_rwlock.c)
+target_include_directories(test_rwlock PRIVATE runtime/include)
+target_link_libraries(test_rwlock PRIVATE Threads::Threads)
+add_test(NAME rwlock_lifecycle COMMAND test_rwlock)
+add_executable(test_rwlock_failures test/test_rwlock_failures.c)
+target_include_directories(test_rwlock_failures PRIVATE runtime/include)
+target_link_libraries(test_rwlock_failures PRIVATE Threads::Threads)
+add_test(NAME rwlock_failures COMMAND test_rwlock_failures)
+set_tests_properties(rwlock_lifecycle rwlock_failures PROPERTIES TIMEOUT 10)
+
 add_test(NAME tools COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/test -p "test_*.py" -v)
 set_tests_properties(tools PROPERTIES ENVIRONMENT "BB_LOADER=$<TARGET_FILE:pbloader>;BB_PBBOOT=$<TARGET_FILE:pbboot>")
 add_test(NAME verify_self_test COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/verify.py --self-test)
