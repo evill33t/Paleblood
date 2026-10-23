@@ -3,6 +3,7 @@
 
      pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--nids NID_DB.xml]
             [--status OUT.json] [--timeout SECONDS] [--trace]
+            [--direct-memory-size BYTES]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
             (list every import: importer, library, symbol, kind, provider, provider offset, size)
 
@@ -26,6 +27,7 @@
    from a public NID database (--nids, default $BB_NID_DB), else the NID is shown. */
 #define _GNU_SOURCE
 #include "runtime/loader.h"
+#include "runtime/direct_memory.h"
 #include "runtime/nid.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -328,15 +330,32 @@ static int add_stub_module(const char *arg)
 static const char *usage =
     "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--nids NID_DB.xml]\n"
     "              [--status OUT.json] [--timeout S] [--trace]\n"
+    "              [--direct-memory-size BYTES]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
+
+static void direct_memory_cleanup(void)
+{
+    if (rt_direct_runtime_shutdown() != RT_DIRECT_OK)
+        rt_fatal("direct memory shutdown", "could not release owned direct-memory resources");
+}
 
 int main(int argc, char **argv)
 {
     const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL;
     int timeout = 30, trace = 0, list = 0;
+    uint64_t direct_capacity = 0;
+    int direct_configured = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--nids") && i + 1 < argc) nid_path = argv[++i];
         else if (!strcmp(argv[i], "--status") && i + 1 < argc) status_path = argv[++i];
+        else if (!strcmp(argv[i], "--direct-memory-size")) {
+            if (direct_configured || i + 1 == argc
+                || rt_direct_parse_capacity(argv[++i], &direct_capacity) != RT_DIRECT_OK) {
+                fputs("pbboot: --direct-memory-size needs one positive decimal 16 KiB multiple, within POSIX file capacity\n", stderr);
+                return 2;
+            }
+            direct_configured = 1;
+        }
         else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--module") && i + 1 < argc && object_count && object_count < MAX_OBJECTS)
             objects[object_count++].path = argv[++i];
@@ -408,6 +427,19 @@ int main(int argc, char **argv)
             }
         }
         return 0;
+    }
+
+    /* Import listing never allocates the configured backing. There is no default capacity. */
+    if (direct_configured) {
+        if (rt_direct_runtime_configure(direct_capacity) != RT_DIRECT_OK) {
+            fputs("pbboot: cannot initialize configured direct-memory backing\n", stderr);
+            return 3;
+        }
+        if (atexit(direct_memory_cleanup)) {
+            direct_memory_cleanup();
+            fputs("pbboot: cannot register direct-memory cleanup\n", stderr);
+            return 3;
+        }
     }
 
     /* Memory: each object's image, its trampolines and data imports; the guest stack and TLS. */

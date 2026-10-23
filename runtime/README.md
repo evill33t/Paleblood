@@ -9,6 +9,7 @@ mechanism lives here and the knowledge lives in `game/` as data.
 | Loader | `loader.c`, `include/runtime/loader.h` | maps a PS4 executable: segments, relocations, imports bound through a callback, TLS template, thread-pointer loads moved to GS |
 | Boot harness | `boot.c` (`pbboot`) | runs the executable's entry on the runtime; stops at the first unimplemented import and names it |
 | System libraries | `syslib/*.c`, `include/runtime/syslib.h` | implementations by library and symbol (`RT_SYSLIB`), one file per system call group |
+| Direct memory | `direct_memory.c`, `include/runtime/direct_memory.h`, `syslib/kernel_memory.c` | explicitly configured logical backing pool; allocation/map/release policy and limitations in [direct memory](../docs/own-runtime-direct-memory.md) |
 | NIDs | `nid.c`, `include/runtime/nid.h` | symbol name to NID |
 | Hooks and captures | `hooks.c`, `capture.c`, `include/runtime/recorder.hpp`, `probe.c`, `plugin.c` | hook registry and opt-in case writer; production hook dispatch does not yet observe calls or connect the Recorder to replacements; serialized cases carry function/run provenance and stable buffer ordering |
 
