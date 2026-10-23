@@ -13,7 +13,9 @@
 
 #include <sched.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 enum { BSD_ENOMEM = 12, BSD_EINVAL = 22 };
 #define SCE_KERNEL_ERROR(e) ((int)(0x80020000u + (unsigned)(e)))
@@ -35,18 +37,40 @@ typedef struct {
     uint64_t stack_size;
     int has_detach_state;
     int detach_state;
+    int has_affinity;
+    uint64_t affinity;
 } guest_attr;
 
 static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
 
 static guest_thread main_thread;
 static _Thread_local guest_thread *current;
+static rt_cpu_topology main_topology;
+static int main_registered;
+
+rt_cpu_status rt_thread_register_main_cpu(void *stack, uint64_t stack_size, rt_cpu_query query,
+                                         void *context, const char *mapping)
+{
+    if (main_registered) return RT_CPU_BAD_CONFIGURATION;
+    rt_cpu_topology topology;
+    const rt_cpu_status status = rt_cpu_topology_init(&topology, query, context, mapping);
+    if (status != RT_CPU_OK) return status;
+    main_topology = topology;
+    main_thread = (guest_thread){.stack = stack, .stack_size = stack_size};
+    current = &main_thread;
+    main_registered = 1;
+    return RT_CPU_OK;
+}
 
 void rt_thread_register_main(void *stack, uint64_t stack_size)
 {
-    main_thread.stack = stack;
-    main_thread.stack_size = stack_size;
-    current = &main_thread;
+    const rt_cpu_status status = rt_thread_register_main_cpu(stack, stack_size, rt_cpu_query_native,
+                                                            NULL, getenv("BB_RUNTIME_CPU_MAP"));
+    if (status != RT_CPU_OK) rt_fatal("main-thread CPU topology", rt_cpu_status_message(status));
+    fputs("runtime: own CPU topology (guest bit=host CPU):", stderr);
+    for (size_t i = 0; i < main_topology.count; i++)
+        fprintf(stderr, " %zu=%u", i, main_topology.host[i]);
+    fputs("; port policy, not a console affinity measurement\n", stderr);
 }
 
 static guest_thread *thread_self(void)
@@ -100,14 +124,33 @@ static int attr_destroy(guest_attr **attr)
     return 0;
 }
 
-/* Copies a running thread's attributes into an initialised attribute object. The copy replaces
-   everything the object held (libthr's pthread_attr_get_np copies the whole attribute block), so a
-   detach state set on it before is dropped: the thread's own detach state is one the system
-   supplies, and the runtime does not know it. */
+/* Replace the supported stack fields and capture the owned thread's actual mapped affinity.
+   A previously set detach state is dropped: the copied thread's detach semantics remain
+   unresolved. Backend failure occurs before changing the destination attribute. */
 static int attr_get(guest_thread *thread, guest_attr **attr)
 {
     if (!thread || !attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
-    **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size};
+    if (!main_registered || thread != &main_thread || current != &main_thread)
+        rt_fatal("scePthreadAttrGet", "affinity queries currently support only the calling registered main thread");
+    uint64_t mask;
+    const rt_cpu_status status = rt_cpu_topology_read(&main_topology, &mask);
+    if (status != RT_CPU_OK) rt_fatal("scePthreadAttrGet", rt_cpu_status_message(status));
+    **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size,
+                         .has_affinity = 1, .affinity = mask};
+    return 0;
+}
+
+/* Supplied libkernel establishes two pointer arguments and exactly one eight-byte output store
+   on success. Its null-mask attribute sentinel is unrestricted, unlike a captured thread mask.
+   This port chooses an internal16-byte CPU set and at most64 mapped guest CPUs: fresh attributes
+   therefore publish low64 all-ones; AttrGet publishes its actual mapped host-thread snapshot.
+   No output/null/alignment check is invented: memcpy preserves an unaligned/alias eight-byte
+   publication, and an inaccessible output faults. Invalid attributes leave the output alone. */
+static int attr_get_affinity(guest_attr **attr, void *output)
+{
+    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    const uint64_t mask = (*attr)->has_affinity ? (*attr)->affinity : UINT64_MAX;
+    memcpy(output, &mask, sizeof mask);
     return 0;
 }
 
@@ -148,6 +191,7 @@ RT_SYSLIB_UNRESOLVED("libkernel", scePthreadYield, thread_yield);
 RT_SYSLIB("libkernel", scePthreadAttrInit, attr_init);
 RT_SYSLIB("libkernel", scePthreadAttrDestroy, attr_destroy);
 RT_SYSLIB("libkernel", scePthreadAttrGet, attr_get);
+RT_SYSLIB("libkernel", scePthreadAttrGetaffinity, attr_get_affinity);
 RT_SYSLIB("libkernel", scePthreadAttrSetdetachstate, sce_attr_set_detach_state);
 
 /* libScePosix: errno values. pthread_attr_init and pthread_attr_destroy are not registered yet, so
