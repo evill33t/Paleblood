@@ -100,3 +100,15 @@ add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+
+# Narrow semaphore lifecycle policy tests; checks remain active in Release.
+add_executable(test_semaphore test/test_semaphore.c runtime/process.c
+               runtime/syslib/table.c runtime/syslib/kernel_semaphore.c)
+target_include_directories(test_semaphore PRIVATE runtime/include)
+target_link_libraries(test_semaphore PRIVATE Threads::Threads)
+add_test(NAME semaphore_lifecycle COMMAND test_semaphore)
+add_executable(test_semaphore_failures test/test_semaphore_failures.c)
+target_include_directories(test_semaphore_failures PRIVATE runtime/include)
+target_link_libraries(test_semaphore_failures PRIVATE Threads::Threads)
+add_test(NAME semaphore_failures COMMAND test_semaphore_failures)
+set_tests_properties(semaphore_lifecycle semaphore_failures PROPERTIES TIMEOUT 10)
