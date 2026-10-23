@@ -16,6 +16,7 @@ add_compile_options(-Wall -Wextra -Werror)
 
 enable_testing()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Threads REQUIRED)
 add_subdirectory(runtime)
 add_subdirectory(game)
 
@@ -42,6 +43,7 @@ set_tests_properties(capture_poc_replay PROPERTIES
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
 add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB})
 target_include_directories(test_syslib PRIVATE runtime/include)
+target_link_libraries(test_syslib PRIVATE Threads::Threads)
 add_test(NAME syslib COMMAND test_syslib)
 
 add_test(NAME tools COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/test -p "test_*.py" -v)
@@ -51,3 +53,15 @@ add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+
+# Narrow semaphore lifecycle policy tests; checks remain active in Release.
+add_executable(test_semaphore test/test_semaphore.c runtime/process.c
+               runtime/syslib/table.c runtime/syslib/kernel_semaphore.c)
+target_include_directories(test_semaphore PRIVATE runtime/include)
+target_link_libraries(test_semaphore PRIVATE Threads::Threads)
+add_test(NAME semaphore_lifecycle COMMAND test_semaphore)
+add_executable(test_semaphore_failures test/test_semaphore_failures.c)
+target_include_directories(test_semaphore_failures PRIVATE runtime/include)
+target_link_libraries(test_semaphore_failures PRIVATE Threads::Threads)
+add_test(NAME semaphore_failures COMMAND test_semaphore_failures)
+set_tests_properties(semaphore_lifecycle semaphore_failures PROPERTIES TIMEOUT 10)
