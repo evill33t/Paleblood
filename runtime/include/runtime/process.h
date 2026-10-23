@@ -6,6 +6,7 @@
    executable (runtime/boot.c) before the guest runs. */
 
 #include <stdint.h>
+#include "runtime/cpu.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,8 +34,17 @@ typedef struct {
 
 extern rt_process_info rt_process;
 
-/* Registers the calling host thread as the guest's main thread, running on the given stack. */
+/* Registers the calling host thread as the guest's main thread. Before guest execution this
+   fixes an own-runtime CPU mapping from all actually allowed host CPUs, and reports it. Optional
+   BB_RUNTIME_CPU_MAP is an ordered decimal permutation of that full set. Unrepresentable or
+   unsupported configurations stop by name; this policy is not a measured console CPU mask. */
 void rt_thread_register_main(void *stack, uint64_t stack_size);
+
+/* Embedding/testing form with a caller-owned provider context (lifetime: whole guest run).
+   Registers only once and only the current main thread. Returns an internal CPU status;
+   failures publish no thread/topology. No host scheduling state is changed. */
+rt_cpu_status rt_thread_register_main_cpu(void *stack, uint64_t stack_size, rt_cpu_query query,
+                                         void *context, const char *mapping);
 
 /* The detach state (0 joinable, 1 detached) recorded on a guest thread attribute variable, for the
    system call that creates a thread from it; caller names that call. A state the guest did not set

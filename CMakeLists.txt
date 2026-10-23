@@ -40,9 +40,13 @@ set_tests_properties(capture_poc_replay PROPERTIES
     ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
 # System library implementations, compiled in directly so the linker keeps every RT_SYSLIB entry
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
-add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB})
+add_executable(test_syslib test/test_syslib.c runtime/process.c runtime/cpu.c ${PB_TEST_SYSLIB})
 target_include_directories(test_syslib PRIVATE runtime/include)
 add_test(NAME syslib COMMAND test_syslib)
+add_executable(test_affinity test/test_affinity.c runtime/cpu.c runtime/process.c
+               runtime/syslib/kernel_thread.c runtime/syslib/table.c)
+target_include_directories(test_affinity PRIVATE runtime/include)
+add_test(NAME affinity COMMAND test_affinity)
 
 add_test(NAME tools COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/test -p "test_*.py" -v)
 set_tests_properties(tools PROPERTIES ENVIRONMENT "BB_LOADER=$<TARGET_FILE:pbloader>;BB_PBBOOT=$<TARGET_FILE:pbboot>")
