@@ -46,6 +46,10 @@ static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
 static guest_thread main_thread;
 static _Thread_local guest_thread *current;
 static rt_cpu_topology main_topology;
+static rt_logical_cpu_slots main_logical_slots;
+/* These domains have different meanings: logical slots never stand for native CPU IDs. */
+enum main_cpu_domain { MAIN_CPU_NONE, MAIN_CPU_NATIVE_ALLOWED, MAIN_CPU_LOGICAL_UNPINNED };
+static enum main_cpu_domain main_cpu_policy;
 static int main_registered;
 
 rt_cpu_status rt_thread_register_main_cpu(void *stack, uint64_t stack_size, rt_cpu_query query,
@@ -56,10 +60,25 @@ rt_cpu_status rt_thread_register_main_cpu(void *stack, uint64_t stack_size, rt_c
     const rt_cpu_status status = rt_cpu_topology_init(&topology, query, context, mapping);
     if (status != RT_CPU_OK) return status;
     main_topology = topology;
+    main_cpu_policy = MAIN_CPU_NATIVE_ALLOWED;
     main_thread = (guest_thread){.stack = stack, .stack_size = stack_size};
     current = &main_thread;
     main_registered = 1;
     return RT_CPU_OK;
+}
+
+rt_logical_cpu_result rt_thread_register_main_logical(void *stack, uint64_t stack_size, uint64_t count)
+{
+    if (main_registered) return (rt_logical_cpu_result){RT_LOGICAL_CPU_INVALID_STATE, 0};
+    rt_logical_cpu_slots slots;
+    const rt_logical_cpu_result status = rt_logical_cpu_slots_init(count, &slots);
+    if (status.status != RT_LOGICAL_CPU_OK) return status;
+    main_logical_slots = slots;
+    main_cpu_policy = MAIN_CPU_LOGICAL_UNPINNED;
+    main_thread = (guest_thread){.stack = stack, .stack_size = stack_size};
+    current = &main_thread;
+    main_registered = 1;
+    return status;
 }
 
 void rt_thread_register_main(void *stack, uint64_t stack_size)
@@ -132,7 +151,7 @@ static int attr_destroy(guest_attr **attr)
     return 0;
 }
 
-/* Replace the supported stack fields and capture the owned thread's actual mapped affinity.
+/* Replace the supported stack fields and capture the selected owned main-thread policy.
    A previously set detach state is dropped: the copied thread's detach semantics remain
    unresolved. Backend failure occurs before changing the destination attribute. */
 static int attr_get(guest_thread *thread, guest_attr **attr)
@@ -140,12 +159,17 @@ static int attr_get(guest_thread *thread, guest_attr **attr)
     if (!thread || !attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
     if (!main_registered || thread != &main_thread || current != &main_thread)
         rt_fatal("scePthreadAttrGet", "affinity queries currently support only the calling registered main thread");
-#if defined(__APPLE__) && defined(__MACH__)
-    rt_fatal("scePthreadAttrGet", "Darwin native CPU affinity backend is unsupported");
-#endif
     uint64_t mask;
-    const rt_cpu_status status = rt_cpu_topology_read(&main_topology, &mask);
-    if (status != RT_CPU_OK) rt_fatal("scePthreadAttrGet", rt_cpu_status_message(status));
+    if (main_cpu_policy == MAIN_CPU_LOGICAL_UNPINNED) {
+        const rt_logical_cpu_result status = rt_logical_cpu_slots_read(&main_logical_slots, &mask);
+        if (status.status != RT_LOGICAL_CPU_OK)
+            rt_fatal("scePthreadAttrGet", "the owned logical CPU-slot policy is invalid");
+    } else if (main_cpu_policy == MAIN_CPU_NATIVE_ALLOWED) {
+        const rt_cpu_status status = rt_cpu_topology_read(&main_topology, &mask);
+        if (status != RT_CPU_OK) rt_fatal("scePthreadAttrGet", rt_cpu_status_message(status));
+    } else {
+        rt_fatal("scePthreadAttrGet", "Darwin native CPU affinity backend is unsupported");
+    }
     **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size,
                          .has_affinity = 1, .affinity = mask};
     return 0;
@@ -154,7 +178,8 @@ static int attr_get(guest_thread *thread, guest_attr **attr)
 /* Supplied libkernel establishes two pointer arguments and exactly one eight-byte output store
    on success. Its null-mask attribute sentinel is unrestricted, unlike a captured thread mask.
    This port chooses an internal16-byte CPU set and at most64 mapped guest CPUs: fresh attributes
-   therefore publish low64 all-ones; AttrGet publishes its actual mapped host-thread snapshot.
+   therefore publish low64 all-ones; AttrGet publishes a snapshot from the selected
+   native-allowed or unpinned logical policy.
    No output/null/alignment check is invented: memcpy preserves an unaligned/alias eight-byte
    publication, and an inaccessible output faults. Invalid attributes leave the output alone. */
 static int attr_get_affinity(guest_attr **attr, void *output)

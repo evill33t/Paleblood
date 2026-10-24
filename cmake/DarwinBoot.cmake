@@ -18,3 +18,20 @@ add_executable(test_boot_darwin_zero_map test/test_boot_darwin_zero_map.c)
 target_include_directories(test_boot_darwin_zero_map PRIVATE runtime/include)
 add_test(NAME darwin_zero_map_ownership COMMAND test_boot_darwin_zero_map)
 set_tests_properties(darwin_zero_map_ownership PROPERTIES TIMEOUT 10)
+# Native-allowed mock providers and explicit logical slots remain separate policy domains.
+add_executable(test_affinity test/test_affinity.c runtime/cpu.c runtime/logical_cpu.c runtime/process.c
+               runtime/syslib/kernel_thread.c runtime/syslib/table.c)
+target_include_directories(test_affinity PRIVATE runtime/include)
+add_test(NAME affinity COMMAND test_affinity)
+add_executable(test_logical_cpu_registry test/test_logical_cpu_registry.c runtime/cpu.c
+               runtime/logical_cpu.c runtime/process.c runtime/syslib/kernel_thread.c runtime/syslib/table.c)
+target_include_directories(test_logical_cpu_registry PRIVATE runtime/include)
+add_test(NAME logical_cpu_registry COMMAND test_logical_cpu_registry)
+set_tests_properties(affinity logical_cpu_registry PROPERTIES TIMEOUT 15)
+add_executable(test_boot_logical_cpu test/test_boot_logical_cpu.c ${PB_BOOT_SUPPORT_SOURCES})
+target_include_directories(test_boot_logical_cpu PRIVATE runtime/include)
+target_link_libraries(test_boot_logical_cpu PRIVATE pbdirect_memory Threads::Threads)
+add_test(NAME darwin_logical_cpu_boot
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_boot_logical_cpu.py -v)
+set_tests_properties(darwin_logical_cpu_boot PROPERTIES TIMEOUT 60
+    ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>;BB_PBBOOT_LOGICAL_QUERY_TEST=$<TARGET_FILE:test_boot_logical_cpu>")

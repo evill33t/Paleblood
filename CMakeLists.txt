@@ -72,11 +72,11 @@ set_tests_properties(capture_poc_replay PROPERTIES
     ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
 # System library implementations, compiled in directly so the linker keeps every RT_SYSLIB entry
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
-add_executable(test_syslib test/test_syslib.c runtime/process.c runtime/cpu.c ${PB_TEST_SYSLIB})
+add_executable(test_syslib test/test_syslib.c runtime/process.c runtime/cpu.c runtime/logical_cpu.c ${PB_TEST_SYSLIB})
 target_include_directories(test_syslib PRIVATE runtime/include)
 target_link_libraries(test_syslib PRIVATE pbdirect_memory Threads::Threads)
 add_test(NAME syslib COMMAND test_syslib)
-add_executable(test_affinity test/test_affinity.c runtime/cpu.c runtime/process.c
+add_executable(test_affinity test/test_affinity.c runtime/cpu.c runtime/logical_cpu.c runtime/process.c
                runtime/syslib/kernel_thread.c runtime/syslib/table.c)
 target_include_directories(test_affinity PRIVATE runtime/include)
 add_test(NAME affinity COMMAND test_affinity)
@@ -119,3 +119,10 @@ add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+
+# Public-registry logical slots are independent of native allowed-ID topology.
+add_executable(test_logical_cpu_registry test/test_logical_cpu_registry.c runtime/cpu.c
+               runtime/logical_cpu.c runtime/process.c runtime/syslib/kernel_thread.c runtime/syslib/table.c)
+target_include_directories(test_logical_cpu_registry PRIVATE runtime/include)
+add_test(NAME logical_cpu_registry COMMAND test_logical_cpu_registry)
+set_tests_properties(logical_cpu_registry PROPERTIES TIMEOUT 15)

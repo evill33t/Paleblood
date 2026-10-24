@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include "runtime/cpu.h"
+#include "runtime/logical_cpu.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,7 +40,8 @@ extern rt_process_info rt_process;
    BB_RUNTIME_CPU_MAP is an ordered decimal permutation of that full set. Unrepresentable or
    unsupported configurations stop by name; this policy is not a measured console CPU mask.
    Darwin startup registers only the calling thread's owned identity/stack. It supplies no CPU
-   mapping; scePthreadAttrGet stops by name until a real Darwin provider exists. */
+   mapping by default; scePthreadAttrGet stops by name unless a separate explicit logical-slot
+   policy has been registered. Native affinity remains unsupported on Darwin. */
 void rt_thread_register_main(void *stack, uint64_t stack_size);
 
 /* Embedding/testing form with a caller-owned provider context (lifetime: whole guest run).
@@ -47,6 +49,12 @@ void rt_thread_register_main(void *stack, uint64_t stack_size);
    failures publish no thread/topology. No host scheduling state is changed. */
 rt_cpu_status rt_thread_register_main_cpu(void *stack, uint64_t stack_size, rt_cpu_query query,
                                          void *context, const char *mapping);
+
+/* Explicit own-port alternative: immutable unpinned logical slots, not allowed host CPU IDs.
+   Registers the calling main thread once; count must be 1..64. No hardware query or scheduler
+   operation occurs. Failure leaves identity/policy unpublished. The value is owned for the main
+   thread lifetime; AttrGet captures its mask, while fresh attributes remain unrestricted. */
+rt_logical_cpu_result rt_thread_register_main_logical(void *stack, uint64_t stack_size, uint64_t count);
 
 /* The detach state (0 joinable, 1 detached) recorded on a guest thread attribute variable, for the
    system call that creates a thread from it; caller names that call. A state the guest did not set

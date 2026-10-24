@@ -8,7 +8,7 @@ The default macOS configuration remains `PB_METAL_ONLY=ON`. The separate, explic
 `PB_METAL_ONLY=OFF`, `PB_DARWIN_GUEST_BOOT=ON`, `CMAKE_OSX_ARCHITECTURES=x86_64`. ARM64, universal,
 missing explicit architecture, mixed Metal/boot selection and a Metal smoke-test request on the
 boot path are rejected. The selected targets are `pbboot`, `pbloader`, `pbdirect_memory` and
-`test_boot_darwin` and `test_boot_darwin_zero_map`. They build C startup and the in-image syslib registry, without the Linux probe,
+`test_boot_darwin`, `test_boot_darwin_zero_map`, plus the explicit logical-policy test targets. They build C startup and the in-image syslib registry, without the Linux probe,
 C++ game plugin, guest graphics, shader translation, Metal bridge or GPU test. Linux keeps the
 previous normal targets and test registration.
 
@@ -43,15 +43,17 @@ host abort/fault outside the owned scope still has process-exit cleanup only. Im
 and the guest stack retain their existing process lifetime; the cleanup log specifically describes
 TLS and signal state.
 
-Darwin main-thread registration supplies only the owned identity and stack. `scePthreadSelf`
-therefore has a real runtime object. Native CPU affinity remains unsupported;
-`scePthreadAttrGet` stops by name without publishing a fabricated mask. Linux's topology provider
-and registration path are unchanged. Darwin also rejects the absent adaptive-mutex policy by name;
+By default Darwin main-thread registration supplies only the owned identity and stack.
+`scePthreadSelf` therefore has a real runtime object, while `scePthreadAttrGet` stops by name.
+The separate explicit `--guest-cpu-count N|host` option registers immutable unpinned logical slots;
+see [CPU topology](own-runtime-cpu-topology.md) for its declared policy and count limits. These
+slots provide a captured attribute mask and never promise native CPU pinning. Native affinity
+remains unsupported. Linux's topology provider and default registration path are unchanged. Darwin also rejects the absent adaptive-mutex policy by name;
 ordinary existing providers are compiled, not newly proven equivalent to all console behavior.
 The configured direct-memory pool remains an explicit own-port policy, not a console capacity.
 There is no new syscall trap, kernel page-size policy or general exception emulation here.
 
-Three owned CTests cover the new path. The Release-active C test exercises rejected template and
+The original startup unit supplied three owned CTests. The Release-active C test exercises rejected template and
 wrong-reader rollback, actual main-thread TCB qualification, owned UD2 saved-PC recovery, one
 bounded spin timeout, and key/TCB/handler/alternate-stack cleanup. It includes the exact production
 boot translation unit, without production fault-injection hooks. The Python test writes owned
@@ -65,9 +67,21 @@ must retain its nonzero owned size, reject reprepare without another allocation,
 successful/idempotent cleanup. No actual page-zero mapping, GS read or platform key is used by
 that failure test. No test compiles a plugin or uses a proprietary fixture.
 
-Release configuration and compilation passed with Apple Clang on the measured ARM Mac under
+Before the new logical-policy integration, Release configuration and compilation passed with
+Apple Clang on the measured ARM Mac under
 x86-64 translation. All three CTests passed, including nine Python-owned startup cases, without
 skips. Normal Linux GCC and Clang builds also passed twelve selected CTests and 68 existing
 Python methods, with unchanged source hashes. These results cover the owned startup cases on
 the measured hosts; original-game startup, universal Darwin TSD layout, complete guest TLS,
 GPU submission and gameplay remain unestablished.
+
+The logical-policy integration adds native-mock and logical-registry CTests plus a separate owned
+boot-policy Python suite. The normal boot target is used for explicit N cases; an exact-source
+test-only count wrapper covers deterministic host-query and no-query/error paths. The original
+nine startup fixtures remain unchanged, including the default named affinity diagnostic. Release
+configuration/build and all six macOS CTests passed, including 16 owned Python methods, without
+skips. Linux GCC 14 and Clang 19 also passed 14 selected CTests and 68 existing Python methods
+in total. All 276 source hashes remained unchanged. These results establish owned startup
+fixtures on the measured hosts; complete original-game startup and graphics remain unestablished.
+The default macOS Metal selection, whole-process x86-64 requirement, TLS qualification and signal
+ownership rules above remain unchanged.
