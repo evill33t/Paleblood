@@ -193,3 +193,16 @@ this run establishes no milestone or return site. The existing five sensor-modul
 were retained. Existing Mach-O registry/startup, TSD/signal, CPU, direct-memory, synchronization
 and Metal code are unchanged. Complete original startup, system-module behavior, graphics and
 gameplay remain unestablished.
+
+### Compiled SDK metadata
+
+The selected build includes the dedicated `compiled_sdk` registry test. The
+provider reads the existing loader-owned main process parameters with bounded
+access; it supplies no SFO-derived version or SDK default. Local validation and
+four-byte publication follow the independently analyzed libkernel getter.
+See [the contract](own-runtime-compiled-sdk.md) for its host-policy boundary.
+Normal x86-64 Release passed all 13 selected Mac CTests. GCC 14 and Clang 19
+each passed the syslib and dedicated SDK CTests on the standalone unit and full
+Linux composition: eight tests, zero skips. Source hashes stayed unchanged.
+No new original-game boot was run: the existing AppContent module-load stop is
+unchanged. SDK metadata support does not establish AppContent service outputs.
