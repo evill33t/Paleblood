@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Call the supported writer and lifecycle operations through the real registry. */
+/* Call the supported reader/writer and lifecycle operations through the real registry. */
 #include "runtime/syslib.h"
 
 #include <pthread.h>
@@ -102,10 +102,103 @@ static void writer_exclusion(init_fn init, slot_fn destroy, slot_fn wrlock, slot
     guards(bytes, sizeof bytes, 3);
 }
 
+typedef struct {
+    void *slot;
+    slot_fn rdlock, wrlock, unlock;
+    _Atomic unsigned admitted, release_reader, writer_start, writer_done, active_readers, errors;
+} reader_group;
+
+static void *holding_reader(void *arg)
+{
+    reader_group *group = arg;
+    if (group->rdlock(group->slot) != 0) {
+        atomic_fetch_add(&group->errors, 1);
+        atomic_store(&group->admitted, 1);
+        return NULL;
+    }
+    atomic_fetch_add(&group->active_readers, 1);
+    atomic_store(&group->admitted, 1);
+    while (!atomic_load(&group->release_reader)) (void)sched_yield();
+    atomic_fetch_sub(&group->active_readers, 1);
+    if (group->unlock(group->slot) != 0) atomic_fetch_add(&group->errors, 1);
+    return NULL;
+}
+
+static void *waiting_writer(void *arg)
+{
+    reader_group *group = arg;
+    atomic_store(&group->writer_start, 1);
+    if (group->wrlock(group->slot) != 0) { atomic_fetch_add(&group->errors, 1); return NULL; }
+    if (atomic_load(&group->active_readers) != 0) atomic_fetch_add(&group->errors, 1);
+    atomic_store(&group->writer_done, 1);
+    if (group->unlock(group->slot) != 0) atomic_fetch_add(&group->errors, 1);
+    return NULL;
+}
+
+static void joined(pthread_t thread)
+{
+    const int result = pthread_join(thread, NULL);
+    if (result) { CHECK(result == 0); _Exit(2); } /* retain possibly worker-owned stack/object */
+}
+
+static void reader_exclusion(init_fn init, slot_fn destroy, slot_fn rdlock, slot_fn wrlock, slot_fn unlock)
+{
+    _Alignas(uint64_t) unsigned char bytes[23], before[23];
+    memset(bytes, 0xa5, sizeof bytes);
+    CHECK((uintptr_t)(bytes + 3) % 8 != 0);
+    CHECK(init(bytes + 3, NULL, NULL) == 0);
+    memcpy(before, bytes, sizeof before);
+    reader_group group = {.slot = bytes + 3, .rdlock = rdlock, .wrlock = wrlock, .unlock = unlock};
+    atomic_init(&group.admitted, 0); atomic_init(&group.release_reader, 0);
+    atomic_init(&group.writer_start, 0); atomic_init(&group.writer_done, 0);
+    atomic_init(&group.active_readers, 1); atomic_init(&group.errors, 0);
+    CHECK(rdlock(group.slot) == 0);
+    pthread_t reader, writer;
+    const int read_created = pthread_create(&reader, NULL, holding_reader, &group);
+    if (read_created) {
+        CHECK(read_created == 0); CHECK(unlock(group.slot) == 0); CHECK(destroy(group.slot) == 0); return;
+    }
+    while (!atomic_load(&group.admitted)) (void)sched_yield();
+    CHECK(atomic_load(&group.active_readers) == 2); /* shared admission before main releases */
+    const int write_created = pthread_create(&writer, NULL, waiting_writer, &group);
+    if (!write_created) {
+        while (!atomic_load(&group.writer_start)) (void)sched_yield();
+        CHECK(atomic_load(&group.writer_done) == 0);
+    } else CHECK(write_created == 0);
+    atomic_fetch_sub(&group.active_readers, 1);
+    CHECK(unlock(group.slot) == 0);
+    CHECK(atomic_load(&group.writer_done) == 0); /* worker still has its reader hold */
+    atomic_store(&group.release_reader, 1);
+    joined(reader);
+    if (!write_created) joined(writer);
+    CHECK(atomic_load(&group.active_readers) == 0 && atomic_load(&group.errors) == 0);
+    if (!write_created) CHECK(atomic_load(&group.writer_done) == 1);
+    CHECK(!memcmp(bytes, before, sizeof bytes));
+    CHECK(destroy(group.slot) == 0 && read_slot(bytes + 3) == 1);
+    guards(bytes, sizeof bytes, 3);
+}
+
+static void reader_ledger(init_fn init, slot_fn destroy, slot_fn rdlock, slot_fn unlock)
+{
+    _Alignas(uint64_t) unsigned char a[23], b[27], saved_a[23], saved_b[27];
+    memset(a, 0xa5, sizeof a); memset(b, 0xa5, sizeof b);
+    CHECK((uintptr_t)(a + 3) % 8 != 0 && (uintptr_t)(b + 5) % 8 != 0);
+    CHECK(init(a + 3, NULL, NULL) == 0 && init(b + 5, NULL, NULL) == 0);
+    memcpy(saved_a, a, sizeof a); memcpy(saved_b, b, sizeof b);
+    CHECK(rdlock(a + 3) == 0 && rdlock(b + 5) == 0);
+    CHECK(unlock(a + 3) == 0); /* remove a non-head ledger node */
+    CHECK(rdlock(a + 3) == 0); /* balanced re-acquisition is not recursion */
+    CHECK(unlock(b + 5) == 0 && unlock(a + 3) == 0);
+    CHECK(!memcmp(a, saved_a, sizeof a) && !memcmp(b, saved_b, sizeof b));
+    CHECK(destroy(a + 3) == 0 && destroy(b + 5) == 0);
+    guards(a, sizeof a, 3); guards(b, sizeof b, 5);
+}
+
 int main(void)
 {
     const init_fn init = (init_fn)entry("scePthreadRwlockInit");
     const slot_fn destroy = (slot_fn)entry("scePthreadRwlockDestroy");
+    const slot_fn rdlock = (slot_fn)entry("scePthreadRwlockRdlock");
     const slot_fn wrlock = (slot_fn)entry("scePthreadRwlockWrlock");
     const slot_fn unlock = (slot_fn)entry("scePthreadRwlockUnlock");
     if (failures) return 1;
@@ -137,6 +230,8 @@ int main(void)
     CHECK((uintptr_t)(empty + 7) % 8 != 0);
     CHECK(destroy(empty + 7) == 0 && !memcmp(empty, before, sizeof empty));
     writer_exclusion(init, destroy, wrlock, unlock);
+    reader_ledger(init, destroy, rdlock, unlock);
+    reader_exclusion(init, destroy, rdlock, wrlock, unlock);
     if (!failures) puts("rwlock lifecycle: ok");
     return failures != 0;
 }
