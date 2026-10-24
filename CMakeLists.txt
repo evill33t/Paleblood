@@ -112,3 +112,13 @@ target_include_directories(test_semaphore_failures PRIVATE runtime/include)
 target_link_libraries(test_semaphore_failures PRIVATE Threads::Threads)
 add_test(NAME semaphore_failures COMMAND test_semaphore_failures)
 set_tests_properties(semaphore_lifecycle semaphore_failures PROPERTIES TIMEOUT 10)
+
+# Realtime wire conversion and failure-before-publication checks.
+add_executable(test_timeval test/test_timeval.c runtime/process.c
+               runtime/syslib/table.c runtime/syslib/kernel_time.c)
+target_include_directories(test_timeval PRIVATE runtime/include)
+add_test(NAME timeval COMMAND test_timeval)
+add_executable(test_timeval_failures test/test_timeval_failures.c)
+target_include_directories(test_timeval_failures PRIVATE runtime/include)
+add_test(NAME timeval_failures COMMAND test_timeval_failures)
+set_tests_properties(timeval timeval_failures PROPERTIES TIMEOUT 10)
