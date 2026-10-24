@@ -18,6 +18,7 @@ static _Noreturn void test_fatal(const char *, const char *);
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "CHECK failed: %s:%d: %s\n", __FILE__, __LINE__, #x); abort(); } } while (0)
 static jmp_buf fatal_target;
 static int expect_fatal, calls, host_result;
+static int fatal_errno;
 static int64_t seconds, microseconds;
 _Alignas(uint64_t) static unsigned char rejected_output[18];
 
@@ -34,6 +35,7 @@ static int test_host_gettimeofday(struct timeval *out, void *zone)
 
 static _Noreturn void test_fatal(const char *caller, const char *reason)
 {
+    fatal_errno = errno; /* The libc recovery path need not preserve this later. */
     CHECK(expect_fatal && strcmp(caller, "gettimeofday") == 0 && reason && *reason);
     longjmp(fatal_target, 1);
 }
@@ -63,15 +65,17 @@ static void rejected(int null_output, int has_timezone, int result, int64_t usec
     memcpy(original, rejected_output, sizeof original);
     const int old_calls = calls;
     host_result = result; seconds = INT64_C(0x100000001); microseconds = usec;
-    expect_fatal = 1; errno = ERANGE;
+    expect_fatal = 1; fatal_errno = 0;
     if (setjmp(fatal_target) == 0) {
+        errno = ERANGE; /* Establish the provider's input after saving the jump context. */
         (void)posix_gettimeofday(null_output ? NULL : rejected_output + 1,
                                 has_timezone ? (const void *)(uintptr_t)1 : NULL);
         CHECK(0);
     }
     expect_fatal = 0;
     CHECK(calls == old_calls + expected_host_calls);
-    CHECK(memcmp(rejected_output, original, sizeof original) == 0 && errno == ERANGE);
+    CHECK(memcmp(rejected_output, original, sizeof original) == 0);
+    CHECK(fatal_errno == ERANGE);
 }
 
 int main(void)
