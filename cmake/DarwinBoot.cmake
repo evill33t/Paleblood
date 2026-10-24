@@ -35,3 +35,15 @@ add_test(NAME darwin_logical_cpu_boot
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_boot_logical_cpu.py -v)
 set_tests_properties(darwin_logical_cpu_boot PROPERTIES TIMEOUT 60
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>;BB_PBBOOT_LOGICAL_QUERY_TEST=$<TARGET_FILE:test_boot_logical_cpu>")
+
+# Narrow rwlock lifecycle tests; CHECKs remain active in optimized builds.
+add_executable(test_rwlock test/test_rwlock.c runtime/process.c
+               runtime/syslib/table.c runtime/syslib/kernel_rwlock.c)
+target_include_directories(test_rwlock PRIVATE runtime/include)
+target_link_libraries(test_rwlock PRIVATE Threads::Threads)
+add_test(NAME rwlock_lifecycle COMMAND test_rwlock)
+add_executable(test_rwlock_failures test/test_rwlock_failures.c)
+target_include_directories(test_rwlock_failures PRIVATE runtime/include)
+target_link_libraries(test_rwlock_failures PRIVATE Threads::Threads)
+add_test(NAME rwlock_failures COMMAND test_rwlock_failures)
+set_tests_properties(rwlock_lifecycle rwlock_failures PROPERTIES TIMEOUT 10)

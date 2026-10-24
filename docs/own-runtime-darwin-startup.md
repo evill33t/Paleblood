@@ -85,3 +85,37 @@ in total. All 276 source hashes remained unchanged. These results establish owne
 fixtures on the measured hosts; complete original-game startup and graphics remain unestablished.
 The default macOS Metal selection, whole-process x86-64 requirement, TLS qualification and signal
 ownership rules above remain unchanged.
+
+## Bounded rwlock composition
+
+This source composition adds the published default unnamed rwlock lifecycle, writer and balanced
+nonrecursive reader adapter. The guest holds an eight-byte pointer slot; the host lock and
+reader/writer ownership metadata remain private. It supports `scePthreadRwlockInit`, Destroy,
+Rdlock, Wrlock and Unlock only in the initialized, default, unnamed, balanced own-thread domain.
+See [rwlock lifecycle](rwlock-lifecycle.md) for the exact port policy and unsupported boundaries.
+No console object layout, recursion, timed/lazy behavior, waiter fairness or error translation is
+inferred from host pthread behavior.
+
+The two dedicated `test_rwlock` and `test_rwlock_failures` targets are added to the selected Darwin
+path as `rwlock_lifecycle` and `rwlock_failures`, each with the existing ten-second CTest bound.
+Their published source is unchanged. They use actual registry entries and real host-thread
+reader/writer exclusion, plus an exact-source test-only failure/interleaving translation unit.
+All six earlier startup/logical CTests remain registered, so the proposed Darwin gate is now
+those six plus these two. The legacy broad `test_syslib` target is not enabled on this path:
+its default main-thread registration does not select the explicit logical CPU policy.
+
+Writer identity and reader ledgers use ordinary host `_Thread_local` storage, not the guest TCB
+or a new GS/FS write. Every thread must release its own holds before exiting. Destroy requires
+external quiescence with no callers or waiters. A process-terminal timeout/cancellation may
+abandon a candidate record or host lock; continuing use or automatic lock cleanup after such
+abandonment remains unsupported. The existing Darwin TLS qualification and per-thread signal
+recovery are unchanged, and this unit adds neither guest thread creation nor cross-thread signal
+routing.
+
+Validation used a normal whole-x86-64 Darwin Release build: all eight selected CTests passed,
+with zero skips. Linux GCC and Clang each passed the three scoped syslib and rwlock CTests.
+All source hashes remained unchanged. One subsequent original macOS game boot passed the lock
+calls and stopped at `sceKernelCreateSema`, returning to `eboot+0x1fc2443`, with no fault and
+owned TLS/signal state released. Graphics and gameplay have not been reached. Semaphore support
+remains a separate integration unit. Existing logical CPU, direct-memory and Metal policies remain
+unchanged.

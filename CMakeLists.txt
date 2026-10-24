@@ -138,4 +138,3 @@ target_include_directories(test_rwlock_failures PRIVATE runtime/include)
 target_link_libraries(test_rwlock_failures PRIVATE Threads::Threads)
 add_test(NAME rwlock_failures COMMAND test_rwlock_failures)
 set_tests_properties(rwlock_lifecycle rwlock_failures PROPERTIES TIMEOUT 10)
-
