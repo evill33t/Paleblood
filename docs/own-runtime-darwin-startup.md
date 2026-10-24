@@ -158,3 +158,38 @@ stopped at `libScePosix!gettimeofday`, returning to `eboot+0x20e2708`, with no f
 TLS/signal state released. Graphics and gameplay have not been reached. Existing CPU,
 direct-memory, rwlock, TSD/signal, loader and Metal behavior is unchanged. This unit adds no
 gettimeofday provider or other time policy.
+
+## Bounded host realtime composition
+
+This source composition adds the published `gettimeofday` adapter in `libScePosix` and
+`libkernel`. Supported calls provide valid writable sixteen-byte output and NULL timezone.
+The host query writes a local native timeval; explicit field conversion publishes two signed
+64-bit fields, seconds then microseconds. Validation requires microseconds in 0..999999 before
+exact sixteen-byte publication, including unaligned output. Native padding and Darwin's narrower
+microsecond field are not copied. Host errno is preserved.
+
+Host realtime is an explicit port policy, not a console-clock, precision or monotonicity claim.
+NULL output, non-NULL timezone, failed host query and malformed microseconds stop by name before
+publication, without guessing guest errors. See [bounded realtime service](own-runtime-gettimeofday.md)
+for the consumed wire, public API basis and target-kernel limits. No timer, module-loading or
+scheduler implementation is supplied by this adapter.
+
+The exact published `test_timeval` and `test_timeval_failures` sources are registered as `timeval`
+and `timeval_failures`, each with its existing ten-second CTest bound. They check both registry
+aliases, unaligned output/canaries, full-width signed seconds, poisoned native padding,
+microsecond endpoints, errno preservation and rejection before publication. They make no
+wall-clock ordering assertion. The ten previous Darwin CTests are unchanged; the proposed gate
+now contains those ten plus these two. The broad legacy syslib test remains outside this path.
+
+A normal whole-x86-64 Darwin Release build passed all twelve selected CTests, with zero skips.
+Linux GCC and Clang each passed the three scoped syslib/timeval CTests; the corrected failure
+fixture then passed separately on both compilers. That fixture observes errno at the adapter's
+fatal boundary because the measured test recovery interval changes it. Production code is
+unchanged by the fixture correction, and all source hashes stayed unchanged within each run.
+
+One subsequent original macOS game run reached the named unsupported
+`sceSysmoduleLoadModule(0x00b4)` path and terminated with SIGABRT. No status JSON was emitted;
+this run establishes no milestone or return site. The existing five sensor-module declarations
+were retained. Existing Mach-O registry/startup, TSD/signal, CPU, direct-memory, synchronization
+and Metal code are unchanged. Complete original startup, system-module behavior, graphics and
+gameplay remain unestablished.
