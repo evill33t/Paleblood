@@ -138,3 +138,15 @@ target_include_directories(test_rwlock_failures PRIVATE runtime/include)
 target_link_libraries(test_rwlock_failures PRIVATE Threads::Threads)
 add_test(NAME rwlock_failures COMMAND test_rwlock_failures)
 set_tests_properties(rwlock_lifecycle rwlock_failures PROPERTIES TIMEOUT 10)
+
+# Narrow semaphore lifecycle policy tests; checks remain active in Release.
+add_executable(test_semaphore test/test_semaphore.c runtime/process.c
+               runtime/syslib/table.c runtime/syslib/kernel_semaphore.c)
+target_include_directories(test_semaphore PRIVATE runtime/include)
+target_link_libraries(test_semaphore PRIVATE Threads::Threads)
+add_test(NAME semaphore_lifecycle COMMAND test_semaphore)
+add_executable(test_semaphore_failures test/test_semaphore_failures.c)
+target_include_directories(test_semaphore_failures PRIVATE runtime/include)
+target_link_libraries(test_semaphore_failures PRIVATE Threads::Threads)
+add_test(NAME semaphore_failures COMMAND test_semaphore_failures)
+set_tests_properties(semaphore_lifecycle semaphore_failures PROPERTIES TIMEOUT 10)
