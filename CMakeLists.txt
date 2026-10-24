@@ -160,3 +160,10 @@ add_executable(test_timeval_failures test/test_timeval_failures.c)
 target_include_directories(test_timeval_failures PRIVATE runtime/include)
 add_test(NAME timeval_failures COMMAND test_timeval_failures)
 set_tests_properties(timeval timeval_failures PROPERTIES TIMEOUT 10)
+
+# Compiled-SDK wire validation over the loader-owned process parameters.
+add_executable(test_compiled_sdk test/test_compiled_sdk.c
+               runtime/syslib/table.c runtime/syslib/kernel_sdk.c)
+target_include_directories(test_compiled_sdk PRIVATE runtime/include)
+add_test(NAME compiled_sdk COMMAND test_compiled_sdk)
+set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
