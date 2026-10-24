@@ -51,3 +51,10 @@ add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+
+# Full-width module arguments and proven early invalid-ID statuses.
+add_executable(test_sysmodule_wire test/test_sysmodule_wire.c
+               runtime/syslib/table.c runtime/syslib/kernel_sysmodule.c)
+target_include_directories(test_sysmodule_wire PRIVATE runtime/include)
+add_test(NAME sysmodule_wire COMMAND test_sysmodule_wire)
+set_tests_properties(sysmodule_wire PROPERTIES TIMEOUT 10)
