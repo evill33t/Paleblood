@@ -126,3 +126,16 @@ add_executable(test_logical_cpu_registry test/test_logical_cpu_registry.c runtim
 target_include_directories(test_logical_cpu_registry PRIVATE runtime/include)
 add_test(NAME logical_cpu_registry COMMAND test_logical_cpu_registry)
 set_tests_properties(logical_cpu_registry PROPERTIES TIMEOUT 15)
+
+# Narrow rwlock lifecycle tests; CHECKs remain active in optimized builds.
+add_executable(test_rwlock test/test_rwlock.c runtime/process.c
+               runtime/syslib/table.c runtime/syslib/kernel_rwlock.c)
+target_include_directories(test_rwlock PRIVATE runtime/include)
+target_link_libraries(test_rwlock PRIVATE Threads::Threads)
+add_test(NAME rwlock_lifecycle COMMAND test_rwlock)
+add_executable(test_rwlock_failures test/test_rwlock_failures.c)
+target_include_directories(test_rwlock_failures PRIVATE runtime/include)
+target_link_libraries(test_rwlock_failures PRIVATE Threads::Threads)
+add_test(NAME rwlock_failures COMMAND test_rwlock_failures)
+set_tests_properties(rwlock_lifecycle rwlock_failures PROPERTIES TIMEOUT 10)
+
