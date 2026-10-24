@@ -51,3 +51,13 @@ add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+
+# Realtime wire conversion and failure-before-publication checks.
+add_executable(test_timeval test/test_timeval.c runtime/process.c
+               runtime/syslib/table.c runtime/syslib/kernel_time.c)
+target_include_directories(test_timeval PRIVATE runtime/include)
+add_test(NAME timeval COMMAND test_timeval)
+add_executable(test_timeval_failures test/test_timeval_failures.c)
+target_include_directories(test_timeval_failures PRIVATE runtime/include)
+add_test(NAME timeval_failures COMMAND test_timeval_failures)
+set_tests_properties(timeval timeval_failures PROPERTIES TIMEOUT 10)
