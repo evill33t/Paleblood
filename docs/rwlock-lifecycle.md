@@ -1,9 +1,9 @@
-# Default unnamed rwlock lifecycle and writers
+# Default unnamed rwlock lifecycle, readers and writers
 
 `runtime/syslib/kernel_rwlock.c` registers `libkernel!scePthreadRwlockInit`,
-`scePthreadRwlockDestroy`, `scePthreadRwlockWrlock` and `scePthreadRwlockUnlock`.
-This is a bounded lifecycle and nonrecursive writer adapter. Reader locking,
-attributes, named kernel objects, try/timed operations, and console scheduling
+`scePthreadRwlockDestroy`, `scePthreadRwlockRdlock`, `scePthreadRwlockWrlock`
+and `scePthreadRwlockUnlock`. This is a bounded lifecycle and nonrecursive
+own-reader/writer adapter. Attributes, named kernel objects, try/timed operations, and console scheduling
 and fairness remain outside it.
 
 The imported wire is an eight-byte handle stored in caller-owned memory.
@@ -24,8 +24,9 @@ failure frees the unpublished allocation and stops through `rt_fatal`, naming
 Non-NULL attributes or names stop by name before allocation or output access.
 
 Destroy accepts only a valid initialized object created by this adapter, after
-all users, waiters and API calls have finished. A recorded writer stops by name
-before host destruction. This quiescence check is port policy. A slot containing
+all users, waiters and API calls have finished. A recorded writer or nonzero reader total stops by name
+before host destruction. These held-object checks are port policy and cannot
+establish that no acquisition, waiter or API call is in flight. A slot containing
 zero returns success without a write. For a live object, the adapter first checks
 host destruction. On success it writes the exact eight-byte tombstone value
 `1` and then frees owned storage. On an unexpected host error it keeps both the
@@ -47,18 +48,57 @@ A private atomic record holds the address of a host `_Thread_local` byte as an
 owner token. This does not use a guest TLS layout or a `pthread_t` encoding.
 Wrlock records the token only after host success; an already recorded writer
 on the same host thread stops by name rather than guessing recursive behavior.
-Unlock supports only that recorded writer. A host failure stops by name; its
+The writer Unlock branch supports only that recorded writer. A host failure stops by name; its
 error branch writes neither the record nor the guest slot. No continuing state or retry is promised.
 After host success, compare-and-exchange clears only the old token, preserving
 a next writer that may already have acquired and published its own record.
 
 The host thread must unlock before it exits. Calls must not reenter on the same
 host thread, including through a signal handler; token lifetime and ownership
-rely on those preconditions. Foreign handles, readers, unlocked/wrong-owner
+rely on those preconditions. Foreign handles, unlocked/wrong-owner
 unlock, stored-NULL lazy initialization and tombstones stop by name or remain
 outside the valid-object contract. No guessed EPERM/EINVAL return is supplied:
 the recovered invalid paths invoke diagnostic behavior whose return is unknown.
 This adapter does not implement guest thread creation or full guest TLS.
+
+## Own-reader operations
+
+Rdlock takes the same borrowed eight-byte slot and leaves it unchanged. It requires
+an initialized owned object and uses host pthread_rwlock_rdlock with default host
+contention policy. Before any host acquisition it rejects this thread's writer
+(write-to-read conversion) or an existing read hold for the same object (recursive
+read). Wrlock rejects a same-object own-reader hold (read-to-write conversion).
+No recursive, upgrade/downgrade or console deadlock error policy is invented.
+
+Each host thread has a private linked ledger keyed by the owned object pointer,
+not the borrowed slot address. One heap node records one balanced read acquisition;
+different objects may be read-held together. The candidate node is allocated before
+host acquisition. Allocation failure stops by name before host calls or metadata
+change. A host Rdlock failure frees that unpublished node, then stops by name,
+without a guessed guest errno, rollback unlock or continuing-state guarantee.
+Success links the node, increments an atomic per-object reader total and returns
+zero, without a fallible allocation after acquisition.
+
+If Unlock has no own-writer token, it requires this host thread's reader node.
+A missing node stops by name before host unlock. Host unlock failure retains the
+node, total and guest slot, then stops by name; no continuing use or retry is
+promised. Success removes just that node, atomically decrements the total and frees
+it. This branch never clears a writer token: another writer may have acquired and
+published after host unlock. Concurrent reader increments are preserved too.
+
+The total conservatively counts acquisitions until their successful unlock
+bookkeeping finishes. It is not the console low29 reader count, admission masks or
+aggregate guest TCB field. One allocated node per hold bounds the count below
+size_t capacity. Destroy still requires external quiescence: no active operations,
+waiters or possible users. Concurrent destruction cannot be made safe by a zero
+reader total. Every thread must release all holds before exit; there is no implicit
+thread-exit unlock or reader-ledger cleanup.
+
+No signal mask or shared metadata mutex spans blocking host acquisition. Like the
+writer path, a process-terminal boot timeout/nonlocal exit or cancellation can
+abandon a candidate or host lock before bookkeeping completes. Continuing runtime
+use or cleanup after such abandonment is unsupported; process exit reclaims owned
+memory. This is not signal-safe recovery or guest TLS/thread-creation support.
 
 ## Evidence and limits
 
@@ -68,7 +108,11 @@ Static instruction analysis establishes default unnamed Init's success-only
 pointer publication and allocation error, and default Destroy's stored-zero
 no-op and tombstone-before-free success behavior. Additional static analysis
 establishes the initialized writer and own-writer unlock fast paths: one handle
-slot argument, unchanged slot bytes, and low32 success status zero. It does not identify the
+slot argument, unchanged slot bytes, and low32 success status zero. Further static
+analysis establishes the initialized reader increment and ordinary reader-release
+decrement success paths. The reader core also updates an aggregate guest thread
+field; this host ledger is a separate explicit ownership policy and does not copy
+that layout or claim equivalent recursive/contended behavior. The artifact does not identify the
 module's firmware/build or prove compatibility with every other shipped
 module. No target library code or raw decompiler output is included here.
 
@@ -81,7 +125,7 @@ Those homebrew declarations corroborate the named interface. Its platform
 typedefs and placeholder declarations do not establish the eight-byte wire,
 console object layout, or all API behavior; the byte widths here come from the
 supplied binary's instructions. Named registration, non-NULL attributes,
-held-lock destruction, priority, fairness, reader/timed operations and complete
+held-lock destruction, priority, fairness, recursive/timed operations and complete
 computed callers remain
 unproved and unimplemented.
 
@@ -99,10 +143,15 @@ The lifecycle test calls the actual registry entries, keeps two distinct owned
 handles alive together, checks repeated write/unlock/lifetime operations and
 unaligned borrowed slots with canaries, and verifies the stored-zero Destroy
 no-op. Main and one joined host worker serialize 128 shared updates under the
-writer lock, with atomic overlap checks and no timing/fairness assertion. The
+writer lock, with atomic overlap checks and no timing/fairness assertion. Additional
+owned workers demonstrate simultaneous reader admission, balanced reader release
+and writer exclusion; different read-held objects exercise non-LIFO ledger unlink.
+No sleep, timing or fairness assertion is used. The
 failure test uses aliases only in its own translation unit to inject allocation
 and host failures, check ownership and unchanged slots, prove tombstone-before-
 free destruction, and check named unsupported paths. An injected next-writer
-publication proves the old unlock's CAS preserves the new record. All checks
+publication proves the old unlock's CAS preserves the new record. Reader aliases
+check candidate-allocation and host failures, retained ownership, unsupported
+paths before host calls, and independent next-reader/next-writer handoffs. All checks
 remain active under Release. These synthetic owned tests do not execute guest
 machine code or establish console synchronization semantics.
