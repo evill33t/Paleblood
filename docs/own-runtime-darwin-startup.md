@@ -119,3 +119,42 @@ calls and stopped at `sceKernelCreateSema`, returning to `eboot+0x1fc2443`, with
 owned TLS/signal state released. Graphics and gameplay have not been reached. Semaphore support
 remains a separate integration unit. Existing logical CPU, direct-memory and Metal policies remain
 unchanged.
+
+## Process-private semaphore lifecycle
+
+This source composition adds the published bounded `sceKernelCreateSema` and
+`sceKernelDeleteSema` policy. Supported creation uses a readable non-NULL empty name, attribute
+value 2, initial count 0, maximum count 1, NULL options and a writable eight-byte output slot.
+It assigns process-private positive int32 IDs and publishes each in eight bytes; IDs are never
+reused during the process lifetime. Delete accepts the full-width ID by value and changes no
+borrowed caller slot. The observed early non-NULL-options EINVAL branch remains independent of
+other argument access. Other unsupported modes and unknown errors stop by API name.
+
+This is record creation/deletion, not a host semaphore primitive or console namespace/count
+implementation. There is no wait, signal, guest worker, priority or scheduler support. See
+[semaphore lifecycle](semaphore-lifecycle.md) for ownership, error and lifetime boundaries.
+The implementation does not use sem_init, add a Darwin semaphore shim, or change guest TLS.
+Unreleased records remain process-owned until exit; no new shutdown hook is installed.
+
+The table mutex and SIGALRM deferral retain the exact published implementation. The old thread
+mask is restored only after releasing the mutex and completing output publication or removed-
+record free. A pending boot alarm may take its nonlocal exit at that restoration boundary.
+This does not bound host POSIX calls, make arbitrary faults/cancellation recoverable or solve
+cross-thread signal routing. Invalid output pointers can fault after record registration and
+leave a process-owned record; no invented rollback or host errno translation is added.
+
+The dedicated `test_semaphore` and `test_semaphore_failures` targets are registered on the
+Darwin path as `semaphore_lifecycle` and `semaphore_failures`, each with its existing ten-second
+CTest bound. Their exact published source checks concurrent distinct IDs, non-reuse, full-width
+Delete, unaligned publication/canaries, ownership failures, the real int32 limit and pending
+SIGALRM restoration. All eight prior startup, logical CPU and rwlock CTests remain registered;
+the proposed ordinary Darwin gate now consists of those eight plus these two. The broad legacy
+syslib test remains outside the selected Darwin path.
+
+A normal whole-x86-64 Darwin Release build passed all ten selected CTests, with zero skips.
+Linux GCC and Clang each passed the three scoped syslib and semaphore CTests. All source
+hashes stayed unchanged. One subsequent original macOS game boot passed semaphore startup and
+stopped at `libScePosix!gettimeofday`, returning to `eboot+0x20e2708`, with no fault and owned
+TLS/signal state released. Graphics and gameplay have not been reached. Existing CPU,
+direct-memory, rwlock, TSD/signal, loader and Metal behavior is unchanged. This unit adds no
+gettimeofday provider or other time policy.
