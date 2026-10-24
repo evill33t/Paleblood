@@ -206,3 +206,15 @@ each passed the syslib and dedicated SDK CTests on the standalone unit and full
 Linux composition: eight tests, zero skips. Source hashes stayed unchanged.
 No new original-game boot was run: the existing AppContent module-load stop is
 unchanged. SDK metadata support does not establish AppContent service outputs.
+
+### System-module ID wire
+
+The selected build includes `sysmodule_wire`. Module entry points retain their
+full 32-bit argument, return the independently bound early invalid-ID statuses,
+and stop unsupported wider requests before they can alias declared stubs.
+No new module is marked loaded. See the [wire contract](own-runtime-sysmodule-wire.md).
+A normal whole-x86-64 Darwin Release build passed all 14 selected CTests, with
+zero skips. GCC 14 and Clang 19 each passed the syslib and dedicated wire CTests
+on standalone and full Linux compositions: eight tests, zero skips. Source
+hashes stayed unchanged within each run. The existing AppContent load/provider
+stop remains unresolved; no original-game boot has been repeated.
