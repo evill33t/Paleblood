@@ -7,5 +7,5 @@ target_include_directories(pbloader PUBLIC include)
 # The boot harness: runs the executable's entry on our runtime (runtime/boot.c). System library
 # implementations are compiled in directly, so the linker keeps every RT_SYSLIB entry.
 file(GLOB PB_SYSLIB CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/syslib/*.c)
-add_executable(pbboot boot.c loader.c nid.c process.c ${PB_SYSLIB})
+add_executable(pbboot boot.c loader.c nid.c process.c module.c ${PB_SYSLIB})
 target_include_directories(pbboot PRIVATE include)
