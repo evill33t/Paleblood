@@ -30,6 +30,8 @@
 #include "runtime/direct_memory.h"
 #include "runtime/memory.h"
 #include "runtime/host_hooks.h"
+
+#include "runtime/module_tls.h"
 #include "runtime/nid.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -454,6 +456,53 @@ static void where(uint64_t address, char *out, size_t size)
     snprintf(out, size, "host+0x%llx", (unsigned long long)address);
 }
 
+/* Eager per-thread TLS is ready before the guest's timeout/recovery scope begins.
+   Main storage already backs its static thread-pointer model and remains borrowed. */
+static rt_module_tls *module_tls_context;
+static void module_tls_cleanup(void)
+{
+    if (!module_tls_context) return;
+    rt_module_tls_status status = rt_module_tls_unbind(module_tls_context);
+    if (status == RT_MODULE_TLS_OK) status = rt_module_tls_destroy(module_tls_context);
+    if (status != RT_MODULE_TLS_OK)
+        rt_fatal("module TLS shutdown", rt_module_tls_status_message(status));
+    module_tls_context = NULL;
+}
+static int prepare_module_tls(void *main_storage, uint64_t main_size, char *error, size_t error_size)
+{
+    rt_module_tls_spec specs[MAX_OBJECTS];
+    size_t count = 0;
+    for (size_t k = 0; k < object_count; k++) {
+        const object *o = &objects[k];
+        const rt_elf_tls *tls = rt_elf_tls_segment(o->elf);
+        if (!tls->memsz) continue;
+        if (tls->vaddr > o->size || tls->filesz > o->size - tls->vaddr) {
+            snprintf(error, error_size, "%s: TLS template outside mapped image", o->label);
+            return -1;
+        }
+        specs[count++] = (rt_module_tls_spec){k + 1,
+            tls->filesz ? o->image + tls->vaddr : NULL, tls->filesz, tls->memsz, tls->align};
+    }
+    rt_module_tls *prepared = NULL;
+    rt_module_tls_status status = rt_module_tls_create(specs, count, &prepared);
+    if (status == RT_MODULE_TLS_OK && rt_elf_tls_segment(objects[0].elf)->memsz)
+        status = rt_module_tls_borrow(prepared, 1, main_storage, main_size);
+    if (status == RT_MODULE_TLS_OK) status = rt_module_tls_bind(prepared);
+    if (status != RT_MODULE_TLS_OK) {
+        if (prepared) (void)rt_module_tls_destroy(prepared);
+        snprintf(error, error_size, "%s", rt_module_tls_status_message(status));
+        return -1;
+    }
+    if (atexit(module_tls_cleanup)) {
+        (void)rt_module_tls_unbind(prepared);
+        (void)rt_module_tls_destroy(prepared);
+        snprintf(error, error_size, "cannot register owned module TLS cleanup");
+        return -1;
+    }
+    module_tls_context = prepared;
+    return 0;
+}
+
 /* --stub-module ID:NAME, the id in C notation (0x0038). Returns 0 when it was added. */
 static int add_stub_module(const char *arg)
 {
@@ -708,9 +757,19 @@ int main(int argc, char **argv)
             darwin_tls.offset, rewritten);
 #else
     const uint64_t align = tls->align > 16 ? tls->align : 16;
+    if (align > SIZE_MAX || tls->memsz > SIZE_MAX - (align - 1)) {
+        fputs("pbboot: main TLS allocation size overflows\n", stderr);
+        return 3;
+    }
     const uint64_t tls_size = (tls->memsz + align - 1) / align * align;
-    unsigned char *tls_block = aligned_alloc(align, tls_size + 4096);
-    memset(tls_block, 0, tls_size + 4096);
+    void *tls_allocation = NULL;
+    if (tls_size > SIZE_MAX - 4096
+        || posix_memalign(&tls_allocation, (size_t)align, (size_t)tls_size + 4096)) {
+        fputs("pbboot: cannot prepare main TLS allocation\n", stderr);
+        return 3;
+    }
+    unsigned char *tls_block = tls_allocation;
+    memset(tls_block, 0, (size_t)tls_size + 4096);
     unsigned char *tp = tls_block + tls_size;
     if (tls->filesz) memcpy(tp - tls_size, objects[0].image + tls->vaddr, tls->filesz);
     *(uint64_t *)tp = (uint64_t)(uintptr_t)tp;
@@ -762,6 +821,18 @@ int main(int argc, char **argv)
     for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) sigaction(signals[i], &sa, NULL);
 
 #endif
+
+#if defined(__APPLE__) && defined(__MACH__)
+    if (prepare_module_tls(darwin_tls.allocation,
+            (uint64_t)((unsigned char *)darwin_tls.tcb - (unsigned char *)darwin_tls.allocation),
+            error, sizeof error)) {
+#else
+    if (prepare_module_tls(tls_block, tls_size, error, sizeof error)) {
+#endif
+        fprintf(stderr, "pbboot: module TLS: %s\n", error);
+        return 3;
+    }
+
     unsigned char *stack_top = stack + STACK_SIZE - 64;
     /* Modules first, in the order given: entry(argument size 0, no arguments, no start override)
        runs the module's constructors and then its start function. */
@@ -911,6 +982,7 @@ int main(int argc, char **argv)
         fprintf(f, "\n}\n");
         fclose(f);
     }
+    module_tls_cleanup();
     free(db);
     free(db_text);
 #if defined(__APPLE__)
