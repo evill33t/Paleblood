@@ -97,3 +97,14 @@ add_test(NAME module_tls_boot
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
 set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
+
+add_executable(test_module test/test_module.c runtime/module.c
+               runtime/syslib/kernel_module.c runtime/syslib/table.c)
+target_include_directories(test_module PRIVATE runtime/include)
+target_link_libraries(test_module PRIVATE Threads::Threads)
+add_test(NAME module_start COMMAND test_module)
+set_tests_properties(module_start PROPERTIES TIMEOUT 10)
+add_test(NAME module_start_boot
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_boot.py -v)
+set_tests_properties(module_start_boot PROPERTIES TIMEOUT 45
+    ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")

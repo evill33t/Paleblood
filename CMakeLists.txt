@@ -72,7 +72,7 @@ set_tests_properties(capture_poc_replay PROPERTIES
     ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
 # System library implementations, compiled in directly so the linker keeps every RT_SYSLIB entry
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
-add_executable(test_syslib test/test_syslib.c runtime/process.c runtime/cpu.c runtime/logical_cpu.c ${PB_TEST_SYSLIB})
+add_executable(test_syslib test/test_syslib.c runtime/process.c runtime/module.c runtime/cpu.c runtime/logical_cpu.c ${PB_TEST_SYSLIB})
 target_include_directories(test_syslib PRIVATE runtime/include)
 target_link_libraries(test_syslib PRIVATE pbdirect_memory Threads::Threads)
 add_test(NAME syslib COMMAND test_syslib)
@@ -187,4 +187,15 @@ set_tests_properties(module_tls PROPERTIES TIMEOUT 10)
 add_test(NAME module_tls_boot
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
 set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
+    ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
+
+add_executable(test_module test/test_module.c runtime/module.c
+               runtime/syslib/kernel_module.c runtime/syslib/table.c)
+target_include_directories(test_module PRIVATE runtime/include)
+target_link_libraries(test_module PRIVATE Threads::Threads)
+add_test(NAME module_start COMMAND test_module)
+set_tests_properties(module_start PROPERTIES TIMEOUT 10)
+add_test(NAME module_start_boot
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_boot.py -v)
+set_tests_properties(module_start_boot PROPERTIES TIMEOUT 45
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
