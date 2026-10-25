@@ -13,6 +13,11 @@
    (runtime/syslib.h), else to a trampoline that stops the run and names it. Each module's entry
    (its constructors, then its start function) runs before the executable's entry.
 
+   Explicit --system-module /PATH=FILE entries are mapped once and initialized by
+   sceKernelLoadStartModuleForSysmodule when requested. --start-system-module
+   starts the same owned catalogue before legacy modules and the main entry.
+   See docs/own-runtime-system-modules.md for admission and compatibility limits.
+
    A module the title ships but that is deliberately not mapped is named with --stub-module, by its
    system module id and library name: when the guest asks the system module library to load it,
    the runtime reports it loaded without mapping it (runtime/syslib/kernel_sysmodule.c), and the
@@ -32,6 +37,7 @@
 #include "runtime/host_hooks.h"
 
 #include "runtime/module_tls.h"
+#include "runtime/module.h"
 #include "runtime/nid.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -55,7 +61,7 @@
 #define MODULE_STRIDE 0x4000000ull
 #define MAX_OBJECTS 16
 #define STACK_SIZE (16u << 20)
-#define TRAMPOLINE_SIZE 48
+#define TRAMPOLINE_SIZE 80
 
 static const struct {
     const char *name;
@@ -76,6 +82,10 @@ enum provider { NONE, MODULE, RUNTIME, RUNTIME_UNRESOLVED };
 
 typedef struct {
     const char *path, *label;
+    char *system_path;
+    int eager;
+    size_t catalogue_index;
+    const unsigned char *state;
     rt_elf *elf;
     unsigned char *image, *tramp, *data;
     uint64_t size;
@@ -89,9 +99,11 @@ typedef struct {
 
 static object objects[MAX_OBJECTS];
 static size_t object_count;
+static size_t system_count;
+static rt_modules *module_context;
 
-enum outcome { RUNNING, UNIMPLEMENTED, FAULT, TIMEOUT, EXITED, RETURNED };
-static const char *const outcome_names[] = {"running", "unimplemented", "fault", "timeout", "exited", "returned"};
+enum outcome { RUNNING, UNIMPLEMENTED, FAULT, TIMEOUT, EXITED, RETURNED, NOT_READY };
+static const char *const outcome_names[] = {"running", "unimplemented", "fault", "timeout", "exited", "returned", "module not ready"};
 
 static sigjmp_buf back_to_host;
 static volatile enum outcome outcome = RUNNING;
@@ -108,6 +120,16 @@ static __attribute__((noinline)) void unimplemented(uint32_t which)
     stopped_from = (uint64_t)(uintptr_t)__builtin_return_address(0);
     stopped_at = which;
     outcome = UNIMPLEMENTED;
+    siglongjmp(back_to_host, 1);
+}
+
+/* Only r11 is consumed by the successful readiness gate. The failure path names
+   the import and returns through the existing outer guest recovery scope. */
+static __attribute__((noinline)) void module_not_ready(uint32_t which)
+{
+    stopped_from = (uint64_t)(uintptr_t)__builtin_return_address(0);
+    stopped_at = which;
+    outcome = NOT_READY;
     siglongjmp(back_to_host, 1);
 }
 
@@ -153,6 +175,8 @@ __asm__(".text\n"
    apart from main so that no caller state is live across the jump back. */
 static __attribute__((noinline)) void run_guest(void *fn, void *a, void *b, void *c, void *stack_top, int timeout)
 {
+    if (module_context && rt_modules_enter(module_context) != RT_MODULE_OK)
+        rt_fatal("system module scope", "cannot enter owned guest module scope");
     outcome = RUNNING;
     if (!sigsetjmp(back_to_host, 1)) {
         alarm((unsigned)timeout);
@@ -160,23 +184,36 @@ static __attribute__((noinline)) void run_guest(void *fn, void *a, void *b, void
         outcome = RETURNED;
     }
     alarm(0);
+    if (module_context && rt_modules_leave(module_context) != RT_MODULE_OK)
+        rt_fatal("system module scope", "cannot leave owned guest module scope");
 }
 
 /* Each import's call goes through a trampoline: mark it called, then jump to the provider, or
    into unimplemented() with the object and import. r11 is scratch in the System V convention and
    carries no argument; rax is left alone (variadic calls pass a count in al). */
-static void write_trampoline(unsigned char *t, unsigned char *mark, uint32_t which, uint64_t target)
+static void write_trampoline(unsigned char *t, unsigned char *mark, uint32_t which,
+                             uint64_t target, const unsigned char *state)
 {
     unsigned char *p = t;
     const uint64_t m = (uint64_t)(uintptr_t)mark;
-    *p++ = 0x49, *p++ = 0xbb, memcpy(p, &m, 8), p += 8;                /* movabs r11, mark */
-    *p++ = 0x41, *p++ = 0xc6, *p++ = 0x03, *p++ = 0x01;               /* mov byte [r11], 1 */
+    *p++ = 0x49, *p++ = 0xbb, memcpy(p, &m, 8), p += 8;              /* movabs r11, mark */
+    *p++ = 0x41, *p++ = 0xc6, *p++ = 0x03, *p++ = 0x01;            /* mov byte [r11], 1 */
+    if (state) {
+        const uint64_t address = (uint64_t)(uintptr_t)state;
+        *p++ = 0x49, *p++ = 0xbb, memcpy(p, &address, 8), p += 8;    /* movabs r11, state */
+        *p++ = 0x41, *p++ = 0x80, *p++ = 0x3b, *p++ = RT_MODULE_STARTED;
+        *p++ = 0x74, *p++ = 18;                                   /* je provider branch */
+        *p++ = 0xbf, memcpy(p, &which, 4), p += 4;
+        const uint64_t failure = (uint64_t)(uintptr_t)module_not_ready;
+        *p++ = 0x49, *p++ = 0xbb, memcpy(p, &failure, 8), p += 8;
+        *p++ = 0x41, *p++ = 0xff, *p++ = 0xe3;
+    }
     if (!target) {
-        *p++ = 0xbf, memcpy(p, &which, 4), p += 4;                     /* mov edi, which */
+        *p++ = 0xbf, memcpy(p, &which, 4), p += 4;
         target = (uint64_t)(uintptr_t)unimplemented;
     }
-    *p++ = 0x49, *p++ = 0xbb, memcpy(p, &target, 8), p += 8;          /* movabs r11, target */
-    *p++ = 0x41, *p++ = 0xff, *p++ = 0xe3;                             /* jmp r11 */
+    *p++ = 0x49, *p++ = 0xbb, memcpy(p, &target, 8), p += 8;
+    *p++ = 0x41, *p++ = 0xff, *p++ = 0xe3;                         /* jmp r11 */
 }
 
 typedef struct {
@@ -242,9 +279,14 @@ static const char *symbol_of(const char *import)
     return hit ? hit->symbol : NULL;
 }
 
+static int encoded_nid(const char *name)
+{
+    const char *separator = strchr(name, '#');
+    return separator && separator - name == RT_NID_SIZE - 1;
+}
 static int same_nid(const char *a, const char *b)
 {
-    return !strncmp(a, b, RT_NID_SIZE - 1) && a[RT_NID_SIZE - 1] == '#' && b[RT_NID_SIZE - 1] == '#';
+    return encoded_nid(a) && encoded_nid(b) && !memcmp(a, b, RT_NID_SIZE - 1);
 }
 
 static void json_string(FILE *f, const char *s)
@@ -264,36 +306,138 @@ static const char *base_name(const char *path)
     return slash ? slash + 1 : path;
 }
 
-/* Binding: modules' exports first, then the runtime's implementations. */
-static void resolve(object *o)
+/* Modules take precedence over typed runtime records. The explicit system-module
+   profile refuses unresolved objects, unsupported symbol kinds and ambiguous providers. */
+static int resolve(object *o, char *error, size_t size)
 {
     for (size_t i = 0; i < o->imports; i++) {
         const char *name = rt_elf_import_name(o->elf, i), *library = rt_elf_import_library(o->elf, i);
-        for (size_t m = 1; m < object_count && !o->bound[i]; m++) {
+        const int kind = rt_elf_import_kind(o->elf, i);
+        const char *problem = NULL;
+        if (system_count && !encoded_nid(name)) problem = "malformed import NID";
+        if (kind == RT_ELF_IMPORT_OTHER) problem = "unsupported import symbol kind";
+        if (system_count && rt_elf_import_has_function_addend(o->elf, i))
+            problem = "function-address relocation addends are unsupported";
+        int wrong_kind = 0;
+        for (size_t m = 1; m < object_count; m++) {
             if (&objects[m] == o) continue;
             for (size_t e = 0; e < rt_elf_export_count(objects[m].elf); e++) {
                 const char *lib = rt_elf_export_library(objects[m].elf, e);
-                if (same_nid(name, rt_elf_export_name(objects[m].elf, e)) && library && lib && !strcmp(library, lib)) {
-                    o->bound[i] = objects[m].image + rt_elf_export_value(objects[m].elf, e);
-                    o->provider[i] = MODULE;
-                    o->provider_object[i] = (int)m;
-                    o->provider_export[i] = e;
-                    break;
+                if (!same_nid(name, rt_elf_export_name(objects[m].elf, e))
+                    || !library || !lib || strcmp(library, lib)) continue;
+                if (kind != rt_elf_export_kind(objects[m].elf, e)) { wrong_kind = 1; continue; }
+                if (o->bound[i]) { problem = "ambiguous module providers"; continue; }
+                const uint64_t value = rt_elf_export_value(objects[m].elf, e);
+                const uint64_t extent = rt_elf_export_size(objects[m].elf, e);
+                if (system_count && (value >= objects[m].size || extent > objects[m].size - value
+                    || (kind == RT_ELF_IMPORT_DATA && (!rt_elf_allocated_bytes(objects[m].elf, value, extent)
+                        || !rt_elf_import_data_fits(o->elf, i, extent)))
+                    || (kind == RT_ELF_IMPORT_FUNCTION && !rt_elf_executable_bytes(objects[m].elf, value, extent ? extent : 1)))) {
+                    problem = "provider has no valid declared object or executable extent";
+                    continue;
                 }
+                o->bound[i] = objects[m].image + value;
+                o->provider[i] = MODULE;
+                o->provider_object[i] = (int)m;
+                o->provider_export[i] = e;
             }
         }
-        for (const rt_syslib_entry *s = rt_syslib_begin(); !o->bound[i] && s && s != rt_syslib_end(); s++) {
-            char nid[RT_NID_SIZE + 1];
-            rt_nid(s->symbol, nid);
-            nid[RT_NID_SIZE - 1] = '#', nid[RT_NID_SIZE] = 0;
-            if (!strncmp(name, nid, RT_NID_SIZE) && library && !strcmp(library, s->library)) {
-                o->bound[i] = s->fn;
-                o->provider[i] = s->capability == RT_SYSLIB_CAPABILITY_IMPLEMENTED
-                                     ? RUNTIME
-                                     : RUNTIME_UNRESOLVED;
+        if (!o->bound[i] && wrong_kind) problem = "provider symbol kind does not match import";
+        if (!o->bound[i] && !problem && kind == RT_ELF_IMPORT_FUNCTION) {
+            for (const rt_syslib_entry *entry = rt_syslib_begin(); entry && entry != rt_syslib_end(); entry++) {
+                char nid[RT_NID_SIZE];
+                rt_nid(entry->symbol, nid);
+                if (!encoded_nid(name) || memcmp(name, nid, RT_NID_SIZE - 1)
+                    || !library || strcmp(library, entry->library)) continue;
+                if (o->bound[i]) { problem = "ambiguous runtime function providers"; break; }
+                o->bound[i] = entry->fn;
+                o->provider[i] = entry->capability == RT_SYSLIB_CAPABILITY_IMPLEMENTED ? RUNTIME : RUNTIME_UNRESOLVED;
             }
+        } else if (!o->bound[i] && !problem && kind == RT_ELF_IMPORT_DATA) {
+            for (const rt_syslib_data *entry = rt_syslib_data_begin(); entry != rt_syslib_data_end(); entry++) {
+                if (!entry->library) continue;
+                char nid[RT_NID_SIZE];
+                rt_nid(entry->symbol, nid);
+                if (!encoded_nid(name) || memcmp(name, nid, RT_NID_SIZE - 1)
+                    || !library || strcmp(library, entry->library)) continue;
+                if (o->bound[i]) { problem = "ambiguous runtime data providers"; break; }
+                if (!entry->address || !rt_elf_import_data_fits(o->elf, i, entry->size)) {
+                    problem = "runtime data provider has insufficient backing"; break;
+                }
+                o->bound[i] = entry->address;
+                o->provider[i] = RUNTIME;
+            }
+            if (system_count && !o->bound[i] && !problem) problem = "data import has no admitted backing";
+        }
+        if (system_count && o->provider[i] == MODULE) {
+            const object *provider = &objects[o->provider_object[i]];
+            if (o->system_path && !provider->system_path)
+                problem = "system module depends on a legacy eager module";
+            if (!o->system_path && provider->system_path && !provider->eager && kind == RT_ELF_IMPORT_DATA)
+                problem = "raw data from a deferred system module needs an eager provider";
+        }
+        if (problem) {
+            snprintf(error, size, "%s: %s %s: %s", o->label, library ? library : "?", name, problem);
+            return -1;
         }
     }
+    return 0;
+}
+
+/* Construct the sealed catalogue before trampolines capture its stable state bytes.
+   Entry zero is a real entry when it belongs to executable file-backed storage. */
+static int prepare_modules(char *error, size_t size)
+{
+    if (!system_count) return 0;
+    rt_module_spec specs[MAX_OBJECTS];
+    size_t count = 0;
+    for (size_t k = 1; k < object_count; k++)
+        if (objects[k].system_path) objects[k].catalogue_index = count++;
+    for (size_t k = 1; k < object_count; k++) {
+        object *o = &objects[k];
+        if (!o->system_path) continue;
+        if (!rt_elf_is_amd64_sce_module(o->elf) || !rt_elf_executable_bytes(o->elf, rt_elf_entry(o->elf), 1)) {
+            snprintf(error, size, "%s: system module needs AMD64 ET_SCE_DYNAMIC and an executable entry", o->label);
+            return -1;
+        }
+        void *override = NULL;
+        for (size_t e = 0; e < rt_elf_export_count(o->elf); e++) {
+            if (strncmp(rt_elf_export_name(o->elf, e), "BaOKcng8g88#", RT_NID_SIZE)) continue;
+            const uint64_t value = rt_elf_export_value(o->elf, e);
+            const uint64_t extent = rt_elf_export_size(o->elf, e);
+            if (override || rt_elf_export_kind(o->elf, e) != RT_ELF_IMPORT_FUNCTION
+                || !rt_elf_executable_bytes(o->elf, value, extent ? extent : 1)) {
+                snprintf(error, size, "%s: ambiguous or non-executable module_start export", o->label);
+                return -1;
+            }
+            override = o->image + value;
+        }
+        uint64_t dependencies = 0;
+        for (size_t i = 0; i < o->imports; i++)
+            if (o->provider[i] == MODULE && objects[o->provider_object[i]].system_path)
+                dependencies |= UINT64_C(1) << objects[o->provider_object[i]].catalogue_index;
+        specs[o->catalogue_index] = (rt_module_spec){o->system_path, (int32_t)(k + 1),
+            (rt_module_entry)(void *)(o->image + rt_elf_entry(o->elf)), override, dependencies};
+    }
+    const rt_module_status status = rt_modules_create(specs, count, &module_context);
+    if (status != RT_MODULE_OK) {
+        snprintf(error, size, "%s", rt_module_status_message(status));
+        return -1;
+    }
+    for (size_t k = 1; k < object_count; k++)
+        if (objects[k].system_path) objects[k].state = rt_modules_state(module_context, (int32_t)(k + 1));
+    return 0;
+}
+
+static void *start_system_module(void *path, void *unused, void *also_unused)
+{
+    (void)unused;
+    (void)also_unused;
+    int32_t handle;
+    const rt_module_status status = rt_modules_load(path, NULL, &handle);
+    if (status != RT_MODULE_OK)
+        rt_fatal("system module startup", rt_module_status_message(status));
+    return NULL;
 }
 
 static uint64_t bind_import(void *user, size_t index, int kind)
@@ -381,6 +525,7 @@ static int add_stub_module(const char *arg)
 
 static const char *usage =
     "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--nids NID_DB.xml]\n"
+    "              [--system-module PATH=FILE | --start-system-module PATH=FILE]...\n"
     "              [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "              [--direct-memory-size BYTES]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
@@ -412,6 +557,21 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--module") && i + 1 < argc && object_count && object_count < MAX_OBJECTS)
             objects[object_count++].path = argv[++i];
+        else if ((!strcmp(argv[i], "--system-module") || !strcmp(argv[i], "--start-system-module"))
+                 && i + 1 < argc && object_count && object_count < MAX_OBJECTS) {
+            const int eager = !strcmp(argv[i], "--start-system-module");
+            const char *mapping = argv[++i], *equal = strchr(mapping, '=');
+            if (!equal || equal == mapping || !equal[1] || mapping[0] != '/') {
+                fputs("pbboot: system module mapping needs /VIRTUAL/PATH=HOST_FILE\n", stderr);
+                return 2;
+            }
+            object *o = &objects[object_count++];
+            o->path = equal + 1;
+            o->system_path = strndup(mapping, (size_t)(equal - mapping));
+            if (!o->system_path) return 3;
+            o->eager = eager;
+            system_count++;
+        }
         else if (!strcmp(argv[i], "--stub-module") && i + 1 < argc) {
             if (add_stub_module(argv[++i])) {
                 fprintf(stderr, "pbboot: --stub-module %s: want a new ID:NAME, the id 16 bits\n", argv[i]);
@@ -457,7 +617,16 @@ int main(int argc, char **argv)
     }
     char *db_text;
     db_count = read_nid_db(nid_path, &db, &db_text);
-    for (size_t k = 0; k < object_count; k++) resolve(&objects[k]);
+    for (size_t k = 0; k < object_count; k++) {
+        if (resolve(&objects[k], error, sizeof error)) {
+            fprintf(stderr, "pbboot: %s\n", error);
+            return 3;
+        }
+    }
+    if (prepare_modules(error, sizeof error)) {
+        fprintf(stderr, "pbboot: system modules: %s\n", error);
+        return 3;
+    }
 
     if (list) {
         for (size_t k = 0; k < object_count; k++) {
@@ -476,7 +645,7 @@ int main(int argc, char **argv)
                     size = rt_elf_export_size(pe, o->provider_export[i]);
                 }
                 printf("%s\t%s\t%s\t%s\t%s\t0x%08llx\t%llu\n", o->label, lib ? lib : "?", sym ? sym : name,
-                       rt_elf_import_kind(o->elf, i) == RT_ELF_IMPORT_DATA ? "data" : "function", provider, offset, size);
+                       rt_elf_import_kind(o->elf, i) == RT_ELF_IMPORT_DATA ? "data" : rt_elf_import_kind(o->elf, i) == RT_ELF_IMPORT_FUNCTION ? "function" : "unsupported", provider, offset, size);
             }
         }
         return 0;
@@ -502,7 +671,8 @@ int main(int argc, char **argv)
         o->image = rt_map_anonymous_at(want, o->size, PROT_READ | PROT_WRITE | PROT_EXEC);
         o->tramp = mmap(NULL, (o->imports + 1) * TRAMPOLINE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC,
                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        o->data = mmap(NULL, (o->imports + 1) * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        o->data = system_count ? NULL : mmap(NULL, (o->imports + 1) * 4096, PROT_READ | PROT_WRITE,
+                                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (o->image != want || o->tramp == MAP_FAILED || o->data == MAP_FAILED) {
             fprintf(stderr, "pbboot: cannot map memory for %s: %s\n", o->path, strerror(errno));
             return 3;
@@ -510,7 +680,8 @@ int main(int argc, char **argv)
         for (size_t i = 0; i < o->imports; i++)
             if (rt_elf_import_kind(o->elf, i) == RT_ELF_IMPORT_FUNCTION)
                 write_trampoline(o->tramp + i * TRAMPOLINE_SIZE, &o->called[i], (uint32_t)(k << 20 | i),
-                                 (uint64_t)(uintptr_t)o->bound[i]);
+                                 (uint64_t)(uintptr_t)o->bound[i],
+                                 o->provider[i] == MODULE ? objects[o->provider_object[i]].state : NULL);
         if (rt_elf_map(o->elf, o->image, bind_import, o, error, sizeof error)) {
             fprintf(stderr, "pbboot: %s\n", error);
             return 3;
@@ -603,11 +774,19 @@ int main(int argc, char **argv)
        runs the module's constructors and then its start function. */
     const char *phase = "eboot";
     for (size_t k = 1; k < object_count; k++) {
+        if (!objects[k].system_path || !objects[k].eager || *objects[k].state == RT_MODULE_STARTED) continue;
+        phase = objects[k].label;
+        run_guest((void *)start_system_module, objects[k].system_path, NULL, NULL, stack_top, timeout);
+        if (outcome != RETURNED) break;
+    }
+    if (!system_count || outcome == RUNNING || outcome == RETURNED)
+    for (size_t k = 1; k < object_count; k++) {
+        if (objects[k].system_path) continue;
         phase = objects[k].label;
         run_guest(objects[k].image + rt_elf_entry(objects[k].elf), NULL, NULL, NULL, stack_top, timeout);
         if (outcome != RETURNED) break;
     }
-    if (object_count == 1 || outcome == RETURNED) {
+    if (outcome == RUNNING || outcome == RETURNED) {
         /* The process entry receives a parameter block (argc, then argv) and an exit function. */
         static struct {
             int32_t argc;
@@ -646,7 +825,7 @@ int main(int argc, char **argv)
 
     const char *stop_name = NULL, *stop_library = NULL, *stop_caller = NULL;
     char stop_nid[RT_NID_SIZE] = "";
-    if (outcome == UNIMPLEMENTED) {
+    if (outcome == UNIMPLEMENTED || outcome == NOT_READY) {
         const object *o = &objects[stopped_at >> 20];
         const size_t i = stopped_at & 0xfffff;
         const char *name = rt_elf_import_name(o->elf, i);
@@ -657,10 +836,10 @@ int main(int argc, char **argv)
     }
     char at[128] = "", from[128] = "";
     if (outcome == FAULT || outcome == TIMEOUT) where(fault_rip, at, sizeof at);
-    if (outcome == UNIMPLEMENTED) where(stopped_from, from, sizeof from);
+    if (outcome == UNIMPLEMENTED || outcome == NOT_READY) where(stopped_from, from, sizeof from);
 
     printf("pbboot: %s: %s", phase, outcome_names[outcome]);
-    if (outcome == UNIMPLEMENTED)
+    if (outcome == UNIMPLEMENTED || outcome == NOT_READY)
         printf(": %s calls %s %s (NID %s), returning to %s", stop_caller, stop_library ? stop_library : "?",
                stop_name ? stop_name : stop_nid, stop_nid, from);
     if (outcome == FAULT) printf(": signal %d at %s, address 0x%llx", fault_signal, at, (unsigned long long)fault_address);
@@ -710,8 +889,16 @@ int main(int argc, char **argv)
                 remaining += objects[k].provider[i] == NONE || objects[k].provider[i] == RUNTIME_UNRESOLVED;
             fprintf(f, "%s{\"name\": ", k > 1 ? ", " : "");
             json_string(f, objects[k].label);
-            fprintf(f, ", \"imports\": %zu, \"imports_remaining\": %zu, \"exports\": %zu}", objects[k].imports, remaining,
+            fprintf(f, ", \"imports\": %zu, \"imports_remaining\": %zu, \"exports\": %zu", objects[k].imports, remaining,
                     rt_elf_export_count(objects[k].elf));
+            if (objects[k].system_path) {
+                static const char *const states[] = {"prepared", "starting", "started", "failed"};
+                fprintf(f, ", \"system_path\": ");
+                json_string(f, objects[k].system_path);
+                fprintf(f, ", \"state\": ");
+                json_string(f, states[*objects[k].state]);
+            }
+            fputc('}', f);
         }
         fprintf(f, "],\n  \"stub_modules\": [");
         for (uint32_t i = 0; i < rt_process.stub_module_count; i++) {
@@ -720,21 +907,24 @@ int main(int argc, char **argv)
             json_string(f, m->name);
             fprintf(f, ", \"id\": \"0x%04x\", \"loaded\": %s}", (unsigned)m->id, m->loaded ? "true" : "false");
         }
-        fprintf(f, "],\n  \"first_unimplemented\": ");
-        if (outcome == UNIMPLEMENTED) {
-            fprintf(f, "{\"caller\": ");
-            json_string(f, stop_caller);
-            fprintf(f, ", \"library\": ");
-            json_string(f, stop_library ? stop_library : "");
-            fprintf(f, ", \"symbol\": ");
-            json_string(f, stop_name ? stop_name : "");
-            fprintf(f, ", \"nid\": ");
-            json_string(f, stop_nid);
-            fprintf(f, ", \"returns_to\": ");
-            json_string(f, from);
-            fprintf(f, "}");
-        } else {
-            fprintf(f, "null");
+        fprintf(f, "]");
+        for (int readiness = 0; readiness < 2; readiness++) {
+            fprintf(f, ",\n  \"%s\": ", readiness ? "module_not_ready" : "first_unimplemented");
+            if (outcome == (readiness ? NOT_READY : UNIMPLEMENTED)) {
+                fprintf(f, "{\"caller\": ");
+                json_string(f, stop_caller);
+                fprintf(f, ", \"library\": ");
+                json_string(f, stop_library ? stop_library : "");
+                fprintf(f, ", \"symbol\": ");
+                json_string(f, stop_name ? stop_name : "");
+                fprintf(f, ", \"nid\": ");
+                json_string(f, stop_nid);
+                fprintf(f, ", \"returns_to\": ");
+                json_string(f, from);
+                fprintf(f, "}");
+            } else {
+                fprintf(f, "null");
+            }
         }
         fprintf(f, ",\n  \"fault\": ");
         if (outcome == FAULT || outcome == TIMEOUT) {
@@ -746,6 +936,11 @@ int main(int argc, char **argv)
         }
         fprintf(f, "\n}\n");
         fclose(f);
+    }
+    if (module_context) {
+        if (rt_modules_destroy(module_context) != RT_MODULE_OK)
+            rt_fatal("system module shutdown", "cannot release inactive owned catalogue");
+        module_context = NULL;
     }
     module_tls_cleanup();
     free(db);
