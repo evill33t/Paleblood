@@ -222,3 +222,5 @@ add_test(NAME weak_boot COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test
 set_tests_properties(weak_boot PROPERTIES TIMEOUT 45 ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
 
 include(${PROJECT_SOURCE_DIR}/cmake/ConsoleTests.cmake)
+
+include(${PROJECT_SOURCE_DIR}/cmake/ProcessIdentityTests.cmake)

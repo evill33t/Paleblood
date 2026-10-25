@@ -131,3 +131,6 @@ set_tests_properties(weak_boot PROPERTIES TIMEOUT 45 ENVIRONMENT "BB_PBBOOT=$<TA
 
 # Owned output-stream provider and whole-process guest fixtures.
 include(${CMAKE_CURRENT_LIST_DIR}/ConsoleTests.cmake)
+
+# Explicit process identity publication and parent-observed owned guest fixtures.
+include(${CMAKE_CURRENT_LIST_DIR}/ProcessIdentityTests.cmake)
