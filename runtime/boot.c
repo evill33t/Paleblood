@@ -40,6 +40,7 @@
 #include "runtime/module.h"
 #include "runtime/nid.h"
 #include "runtime/process.h"
+#include "runtime/process_data.h"
 #include "runtime/syslib.h"
 
 #if defined(__APPLE__) && defined(__MACH__)
@@ -92,7 +93,7 @@ static const struct {
 };
 #define MILESTONES (sizeof milestones / sizeof milestones[0])
 
-enum provider { NONE, MODULE, RUNTIME, RUNTIME_UNRESOLVED };
+enum provider { NONE, MODULE, RUNTIME, RUNTIME_UNRESOLVED, RUNTIME_DATA_PENDING };
 
 typedef struct {
     const char *path, *label;
@@ -450,7 +451,7 @@ static const char *base_name(const char *path)
 
 /* Modules take precedence over typed runtime records. The explicit system-module
    profile refuses unresolved objects, unsupported symbol kinds and ambiguous providers. */
-static int resolve(object *o, char *error, size_t size)
+static int resolve(object *o, int list_only, char *error, size_t size)
 {
     for (size_t i = 0; i < o->imports; i++) {
         const char *name = rt_elf_import_name(o->elf, i), *library = rt_elf_import_library(o->elf, i);
@@ -496,20 +497,30 @@ static int resolve(object *o, char *error, size_t size)
                 o->provider[i] = entry->capability == RT_SYSLIB_CAPABILITY_IMPLEMENTED ? RUNTIME : RUNTIME_UNRESOLVED;
             }
         } else if (!o->bound[i] && !problem && kind == RT_ELF_IMPORT_DATA) {
+            const rt_syslib_data *candidate = NULL;
             for (const rt_syslib_data *entry = rt_syslib_data_begin(); entry != rt_syslib_data_end(); entry++) {
                 if (!entry->library) continue;
                 char nid[RT_NID_SIZE];
                 rt_nid(entry->symbol, nid);
                 if (!encoded_nid(name) || memcmp(name, nid, RT_NID_SIZE - 1)
                     || !library || strcmp(library, entry->library)) continue;
-                if (o->bound[i]) { problem = "ambiguous runtime data providers"; break; }
-                if (!entry->address || !rt_elf_import_data_fits(o->elf, i, entry->size)) {
-                    problem = "runtime data provider has insufficient backing"; break;
-                }
-                o->bound[i] = entry->address;
-                o->provider[i] = RUNTIME;
+                if (candidate) { problem = "ambiguous runtime data providers"; break; }
+                candidate = entry;
             }
-            if (system_count && !o->bound[i] && !problem) problem = "data import has no admitted backing";
+            if (candidate && !problem) {
+                if (!candidate->address || !rt_elf_import_data_fits(o->elf, i, candidate->size))
+                    problem = "runtime data provider has insufficient backing";
+                else if (candidate->ready && !candidate->ready()) {
+                    o->provider[i] = RUNTIME_DATA_PENDING;
+                    if (system_count && !list_only)
+                        problem = "runtime data is not prepared; enable --owned-process-data for owned kernel objects";
+                } else {
+                    o->bound[i] = candidate->address;
+                    o->provider[i] = RUNTIME;
+                }
+            }
+            if (system_count && !o->bound[i] && o->provider[i] != RUNTIME_DATA_PENDING && !problem)
+                problem = "data import has no admitted backing";
         }
         if (system_count && o->provider[i] == MODULE) {
             const object *provider = &objects[o->provider_object[i]];
@@ -668,7 +679,7 @@ static int add_stub_module(const char *arg)
 static const char *usage =
     "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--nids NID_DB.xml]\n"
     "              [--system-module PATH=FILE | --start-system-module PATH=FILE]...\n"
-    "              [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
+    "              [--owned-process-data] [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "              [--direct-memory-size BYTES] [--guest-cpu-count N|host (Darwin only)]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
@@ -699,7 +710,7 @@ static void direct_memory_cleanup(void)
 int main(int argc, char **argv)
 {
     const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *game_library_path = NULL;
-    int timeout = 30, trace = 0, list = 0;
+    int timeout = 30, trace = 0, list = 0, owned_process_data = 0;
     uint64_t direct_capacity = 0;
     int direct_configured = 0;
 #if defined(__APPLE__)
@@ -755,6 +766,7 @@ int main(int argc, char **argv)
                 return 2;
             }
         }
+        else if (!strcmp(argv[i], "--owned-process-data")) owned_process_data = 1;
         else if (!strcmp(argv[i], "--trace")) trace = 1;
         else if (!strcmp(argv[i], "--imports")) list = 1;
         else if (argv[i][0] != '-' && !object_count) objects[object_count++].path = argv[i];
@@ -792,10 +804,19 @@ int main(int argc, char **argv)
         o->called = calloc(n, 1);
         rt_elf_set_tls_module_id(o->elf, k + 1);
     }
+    /* Listing is metadata-only: it never consumes entropy or publishes data. */
+    if (owned_process_data && !list) {
+        const char *const guest_argv[] = {"eboot.bin", NULL};
+        const rt_process_data_status status = rt_process_data_prepare(1, guest_argv, 0, NULL);
+        if (status != RT_PROCESS_DATA_OK) {
+            fprintf(stderr, "pbboot: owned process data: %s\n", rt_process_data_status_message(status));
+            return 3;
+        }
+    }
     char *db_text;
     db_count = read_nid_db(nid_path, &db, &db_text);
     for (size_t k = 0; k < object_count; k++) {
-        if (resolve(&objects[k], error, sizeof error)) {
+        if (resolve(&objects[k], list, error, sizeof error)) {
             fprintf(stderr, "pbboot: %s\n", error);
             return 3;
         }
@@ -813,6 +834,7 @@ int main(int argc, char **argv)
                 const char *lib = rt_elf_import_library(o->elf, i);
                 const char *provider = o->provider[i] == MODULE    ? objects[o->provider_object[i]].label
                                        : o->provider[i] == RUNTIME ? "runtime"
+                                       : o->provider[i] == RUNTIME_DATA_PENDING ? "runtime-data-pending"
                                        : o->provider[i] == RUNTIME_UNRESOLVED ? "runtime-unresolved"
                                                                              : "";
                 unsigned long long offset = 0, size = 0;
@@ -1032,7 +1054,8 @@ int main(int argc, char **argv)
             const char *argv[3];
         } params = {1, 0, {"eboot.bin", NULL, NULL}};
         phase = "eboot";
-        run_guest(objects[0].image + rt_elf_entry(objects[0].elf), &params, (void *)guest_exit, NULL, stack_top, timeout);
+        run_guest(objects[0].image + rt_elf_entry(objects[0].elf),
+                  owned_process_data ? rt_process_data_parameters() : &params, (void *)guest_exit, NULL, stack_top, timeout);
     }
 
     /* Results */
@@ -1124,7 +1147,8 @@ int main(int argc, char **argv)
         for (size_t k = 1; k < object_count; k++) {
             size_t remaining = 0;
             for (size_t i = 0; i < objects[k].imports; i++)
-                remaining += objects[k].provider[i] == NONE || objects[k].provider[i] == RUNTIME_UNRESOLVED;
+                remaining += objects[k].provider[i] == NONE || objects[k].provider[i] == RUNTIME_UNRESOLVED
+                          || objects[k].provider[i] == RUNTIME_DATA_PENDING;
             fprintf(f, "%s{\"name\": ", k > 1 ? ", " : "");
             json_string(f, objects[k].label);
             fprintf(f, ", \"imports\": %zu, \"imports_remaining\": %zu, \"exports\": %zu", objects[k].imports, remaining,
