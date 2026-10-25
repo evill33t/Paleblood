@@ -80,7 +80,7 @@ def read_imports(root: str) -> list[dict]:
                                                                 'kind': r['kind'], 'implemented': 'no',
                                                                 'importers': set()})
             row['importers'].add(r['importer'])
-            if r['provider'] and r['provider'] not in ('runtime-unresolved', 'runtime-data-pending'):
+            if r['provider'] and r['provider'] not in ('runtime-unresolved', 'runtime-data-pending', 'weak-absent'):
                 row['implemented'] = 'yes'
     return [rows[k] for k in sorted(rows)]
 
