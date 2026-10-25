@@ -2,6 +2,7 @@
 #ifndef RUNTIME_PROCESS_DATA_H
 #define RUNTIME_PROCESS_DATA_H
 #include <stddef.h>
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,13 +17,28 @@ extern "C" {
 #define RT_PROCESS_STRING_BYTES (1024u * 1024u)
 typedef enum {
     RT_PROCESS_DATA_OK, RT_PROCESS_DATA_INVALID, RT_PROCESS_DATA_NO_MEMORY,
-    RT_PROCESS_DATA_ENTROPY, RT_PROCESS_DATA_BUSY, RT_PROCESS_DATA_ALREADY_PREPARED
+    RT_PROCESS_DATA_ENTROPY, RT_PROCESS_DATA_BUSY, RT_PROCESS_DATA_ALREADY_PREPARED,
+    RT_PROCESS_DATA_HOST_PID, RT_PROCESS_DATA_NOT_READY, RT_PROCESS_DATA_INHERITED
 } rt_process_data_status;
 rt_process_data_status rt_process_data_prepare(size_t argc, const char *const *argv,
                                                size_t envc, const char *const *env);
 /* Acquire publication before using the raw argc/argv/env block or registry data.
-   The parameter block is NULL before successful preparation. */
+   The parameter block is NULL before successful preparation.
+   A successful profile captures the genuine host process ID as a positive
+   int32_t. This is an explicit own-port identity, not a measured console PID.
+   It is shared by host threads, including a preparation worker. No implicit
+   identity is exposed before preparation. Readiness, parameters and the PID
+   getter preserve host errno; prepare retains its allocation/entropy behavior.
+
+   A host-fork child inheriting READY storage is refused by every ready gate,
+   parameters/getter and further preparation; it cannot reset/rebind inherited
+   guest pointers. A child forked while UNREADY may prepare independently.
+   Fork during preparation and guest fork/exec are unsupported. These checks do
+   not revoke a raw pointer already retained before a host fork. */
 int rt_process_data_ready(void);
+/* out must name a writable aligned int32_t. NULL is INVALID. Only success
+   stores four bytes; every error leaves the pointed-to value untouched. */
+rt_process_data_status rt_process_data_pid(int32_t *out);
 void *rt_process_data_parameters(void);
 const char *rt_process_data_status_message(rt_process_data_status status);
 #ifdef __cplusplus
