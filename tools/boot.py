@@ -17,7 +17,7 @@ Writes, from the run:
                               includes the outcome, phase, return site, and guest fault details
   symbols/imports.csv         every import of the executable and the mapped modules: importer,
                               library, symbol, kind, provider (a module, "runtime",
-                              "runtime-unresolved", "runtime-data-pending", or empty);
+                              "runtime-unresolved", "runtime-data-pending", "weak-absent", or empty);
                               tools/runtime_issues.py groups it
   symbols/module_functions.csv the mapped modules' functions the executable or another module
                               uses: tracked like game functions (status original), replaceable later
@@ -144,7 +144,7 @@ def write_listing(listing: str, root: str) -> None:
             continue
         importer, library, symbol, kind, provider, offset, size = line.split('\t')
         imports.add((importer, library, symbol, kind, provider))
-        if provider and provider not in ('runtime', 'runtime-unresolved', 'runtime-data-pending'):
+        if provider and provider not in ('runtime', 'runtime-unresolved', 'runtime-data-pending', 'weak-absent'):
             functions[(provider, offset)] = (provider, offset, size, symbol, 'original')
     with open(os.path.join(root, 'symbols', 'imports.csv'), 'w', newline='') as f:
         w = csv.writer(f, lineterminator='\n')

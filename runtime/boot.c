@@ -79,7 +79,7 @@ static const struct {
 };
 #define MILESTONES (sizeof milestones / sizeof milestones[0])
 
-enum provider { NONE, MODULE, RUNTIME, RUNTIME_UNRESOLVED, RUNTIME_DATA_PENDING };
+enum provider { NONE, MODULE, RUNTIME, RUNTIME_UNRESOLVED, RUNTIME_DATA_PENDING, WEAK_ABSENT };
 
 typedef struct {
     const char *path, *label;
@@ -272,19 +272,22 @@ static size_t read_nid_db(const char *path, nid_name **out, char **text)
 static nid_name *db;
 static size_t db_count;
 
+static int encoded_nid(const char *name)
+{
+    const char *separator = strchr(name, '#');
+    return separator && separator - name == RT_NID_SIZE - 1;
+}
+
 static const char *symbol_of(const char *import)
 {
+    if (!encoded_nid(import)) return NULL;
     nid_name key = {{0}, NULL};
     memcpy(key.nid, import, RT_NID_SIZE - 1);
     const nid_name *hit = db_count ? bsearch(&key, db, db_count, sizeof *db, by_nid) : NULL;
     return hit ? hit->symbol : NULL;
 }
 
-static int encoded_nid(const char *name)
-{
-    const char *separator = strchr(name, '#');
-    return separator && separator - name == RT_NID_SIZE - 1;
-}
+
 static int same_nid(const char *a, const char *b)
 {
     return encoded_nid(a) && encoded_nid(b) && !memcmp(a, b, RT_NID_SIZE - 1);
@@ -307,6 +310,33 @@ static const char *base_name(const char *path)
     return slash ? slash + 1 : path;
 }
 
+/* Runtime records have library-qualified NIDs. A plain request matching a known
+   friendly name has a candidate, but this profile cannot bind it by raw name. */
+static int runtime_identity(const char *name, const char *library, const char *symbol, const char *provider_library)
+{
+    if (!encoded_nid(name)) return !strcmp(name, symbol);
+    if (!library || strcmp(library, provider_library)) return 0;
+    char nid[RT_NID_SIZE];
+    rt_nid(symbol, nid);
+    return !memcmp(name, nid, RT_NID_SIZE - 1);
+}
+static int visible_symbol(const rt_elf_symbol *symbol)
+{
+    /* Only the known INTERNAL/HIDDEN encodings prove a definition is not an
+       external candidate. Unknown encodings stay present and unsupported. */
+    return symbol->other != 1 && symbol->other != 2;
+}
+/* Plain weak absence needs all externally visible definitions, including main.
+   A matching definition is retained as an unsupported candidate, never zeroed. */
+static int plain_definition(const char *name)
+{
+    for (size_t m = 0; m < object_count; m++)
+        for (size_t e = 0; e < rt_elf_export_count(objects[m].elf); e++)
+            if (!strcmp(name, rt_elf_export_name(objects[m].elf, e))
+                && visible_symbol(rt_elf_export_symbol(objects[m].elf, e))) return 1;
+    return 0;
+}
+
 /* Modules take precedence over typed runtime records. The explicit system-module
    profile refuses unresolved objects, unsupported symbol kinds and ambiguous providers. */
 static int resolve(object *o, int list_only, char *error, size_t size)
@@ -314,11 +344,25 @@ static int resolve(object *o, int list_only, char *error, size_t size)
     for (size_t i = 0; i < o->imports; i++) {
         const char *name = rt_elf_import_name(o->elf, i), *library = rt_elf_import_library(o->elf, i);
         const int kind = rt_elf_import_kind(o->elf, i);
+        const rt_elf_symbol *symbol = rt_elf_import_symbol(o->elf, i);
+        const int optional = rt_elf_symbol_can_be_null(symbol);
         const char *problem = NULL;
-        if (system_count && !encoded_nid(name)) problem = "malformed import NID";
-        if (kind == RT_ELF_IMPORT_OTHER) problem = "unsupported import symbol kind";
-        if (system_count && rt_elf_import_has_function_addend(o->elf, i))
-            problem = "function-address relocation addends are unsupported";
+        if (symbol->binding == 2 && !optional) problem = "unsupported weak symbol type or visibility";
+        if (system_count && !encoded_nid(name) && !optional) problem = "malformed import NID";
+        if (kind == RT_ELF_IMPORT_OTHER && !(optional && symbol->type == 0))
+            problem = "unsupported import symbol kind";
+        if (optional && !encoded_nid(name)) {
+            if (strchr(name, '#')) problem = "malformed weak import NID";
+            else if (plain_definition(name)) problem = "plain weak definition binding is unsupported";
+            for (const rt_syslib_entry *entry = rt_syslib_begin(); entry && entry != rt_syslib_end(); entry++)
+                if (runtime_identity(name, library, entry->symbol, entry->library))
+                    problem = "plain weak runtime provider binding is unsupported";
+            for (const rt_syslib_data *entry = rt_syslib_data_begin(); entry != rt_syslib_data_end(); entry++)
+                if (entry->library && runtime_identity(name, library, entry->symbol, entry->library))
+                    problem = "plain weak runtime provider binding is unsupported";
+            if (!problem) { o->provider[i] = WEAK_ABSENT; continue; }
+        }
+        if (optional && encoded_nid(name) && !library) problem = "weak NID import has no library namespace";
         int wrong_kind = 0;
         for (size_t m = 1; m < object_count; m++) {
             if (&objects[m] == o) continue;
@@ -326,6 +370,14 @@ static int resolve(object *o, int list_only, char *error, size_t size)
                 const char *lib = rt_elf_export_library(objects[m].elf, e);
                 if (!same_nid(name, rt_elf_export_name(objects[m].elf, e))
                     || !library || !lib || strcmp(library, lib)) continue;
+                const rt_elf_symbol *definition = rt_elf_export_symbol(objects[m].elf, e);
+                if (!visible_symbol(definition)) continue;
+                if ((definition->other & ~3u) || definition->section >= 0xff00) {
+                    problem = "provider has unsupported visibility or special section"; continue;
+                }
+                if (optional && symbol->type == 0) {
+                    problem = "weak untyped definition binding is unsupported"; continue;
+                }
                 if (kind != rt_elf_export_kind(objects[m].elf, e)) { wrong_kind = 1; continue; }
                 if (o->bound[i]) { problem = "ambiguous module providers"; continue; }
                 const uint64_t value = rt_elf_export_value(objects[m].elf, e);
@@ -344,6 +396,17 @@ static int resolve(object *o, int list_only, char *error, size_t size)
             }
         }
         if (!o->bound[i] && wrong_kind) problem = "provider symbol kind does not match import";
+        /* A known incompatible or untyped provider is not an absent symbol. */
+        if (optional && !o->bound[i] && !problem) {
+            for (const rt_syslib_entry *entry = rt_syslib_begin(); entry && entry != rt_syslib_end(); entry++)
+                if (runtime_identity(name, library, entry->symbol, entry->library)
+                    && kind != RT_ELF_IMPORT_FUNCTION)
+                    problem = "runtime function provider does not match weak import kind";
+            for (const rt_syslib_data *entry = rt_syslib_data_begin(); entry != rt_syslib_data_end(); entry++)
+                if (entry->library && runtime_identity(name, library, entry->symbol, entry->library)
+                    && kind != RT_ELF_IMPORT_DATA)
+                    problem = "runtime data provider does not match weak import kind";
+        }
         if (!o->bound[i] && !problem && kind == RT_ELF_IMPORT_FUNCTION) {
             for (const rt_syslib_entry *entry = rt_syslib_begin(); entry && entry != rt_syslib_end(); entry++) {
                 char nid[RT_NID_SIZE];
@@ -370,16 +433,34 @@ static int resolve(object *o, int list_only, char *error, size_t size)
                     problem = "runtime data provider has insufficient backing";
                 else if (candidate->ready && !candidate->ready()) {
                     o->provider[i] = RUNTIME_DATA_PENDING;
-                    if (system_count && !list_only)
+                    if ((system_count || optional) && !list_only)
                         problem = "runtime data is not prepared; enable --owned-process-data for owned kernel objects";
                 } else {
                     o->bound[i] = candidate->address;
                     o->provider[i] = RUNTIME;
                 }
             }
-            if (system_count && !o->bound[i] && o->provider[i] != RUNTIME_DATA_PENDING && !problem)
-                problem = "data import has no admitted backing";
+
         }
+        /* Normal module binding excludes main and the importing object. Their
+           definitions still prevent an encoded request from being absent. */
+        if (optional && !problem && !o->bound[i] && o->provider[i] == NONE && encoded_nid(name)) {
+            for (size_t m = 0; m < object_count; m++) {
+                if (m != 0 && &objects[m] != o) continue;
+                for (size_t e = 0; e < rt_elf_export_count(objects[m].elf); e++) {
+                    const char *lib = rt_elf_export_library(objects[m].elf, e);
+                    if (same_nid(name, rt_elf_export_name(objects[m].elf, e)) && library && lib
+                        && !strcmp(library, lib) && visible_symbol(rt_elf_export_symbol(objects[m].elf, e)))
+                        problem = "weak definition in main or importer binding is unsupported";
+                }
+            }
+        }
+        if (optional && !problem && !o->bound[i] && o->provider[i] == NONE)
+            o->provider[i] = WEAK_ABSENT;
+        if (system_count && kind == RT_ELF_IMPORT_DATA && !o->bound[i]
+            && o->provider[i] == NONE && !problem) problem = "data import has no admitted backing";
+        if (rt_elf_import_has_function_addend(o->elf, i)
+            && o->provider[i] != WEAK_ABSENT) problem = "function-address relocation addends are unsupported";
         if (system_count && o->provider[i] == MODULE) {
             const object *provider = &objects[o->provider_object[i]];
             if (o->system_path && !provider->system_path)
@@ -454,6 +535,7 @@ static void *start_system_module(void *path, void *unused, void *also_unused)
 static uint64_t bind_import(void *user, size_t index, int kind)
 {
     const object *o = user;
+    if (o->provider[index] == WEAK_ABSENT) return 0;
     if (kind == RT_ELF_IMPORT_DATA)
         return o->bound[index] ? (uint64_t)(uintptr_t)o->bound[index] : (uint64_t)(uintptr_t)(o->data + 4096 * index);
     return (uint64_t)(uintptr_t)(o->tramp + TRAMPOLINE_SIZE * index);
@@ -657,6 +739,7 @@ int main(int argc, char **argv)
                 const char *lib = rt_elf_import_library(o->elf, i);
                 const char *provider = o->provider[i] == MODULE    ? objects[o->provider_object[i]].label
                                        : o->provider[i] == RUNTIME ? "runtime"
+                                       : o->provider[i] == WEAK_ABSENT ? "weak-absent"
                                        : o->provider[i] == RUNTIME_DATA_PENDING ? "runtime-data-pending"
                                        : o->provider[i] == RUNTIME_UNRESOLVED ? "runtime-unresolved"
                                                                              : "";
@@ -667,7 +750,7 @@ int main(int argc, char **argv)
                     size = rt_elf_export_size(pe, o->provider_export[i]);
                 }
                 printf("%s\t%s\t%s\t%s\t%s\t0x%08llx\t%llu\n", o->label, lib ? lib : "?", sym ? sym : name,
-                       rt_elf_import_kind(o->elf, i) == RT_ELF_IMPORT_DATA ? "data" : rt_elf_import_kind(o->elf, i) == RT_ELF_IMPORT_FUNCTION ? "function" : "unsupported", provider, offset, size);
+                       rt_elf_import_kind(o->elf, i) == RT_ELF_IMPORT_DATA ? "data" : rt_elf_import_kind(o->elf, i) == RT_ELF_IMPORT_FUNCTION ? "function" : rt_elf_import_symbol(o->elf, i)->type == 0 ? "untyped" : "unsupported", provider, offset, size);
             }
         }
         return 0;
@@ -700,7 +783,7 @@ int main(int argc, char **argv)
             return 3;
         }
         for (size_t i = 0; i < o->imports; i++)
-            if (rt_elf_import_kind(o->elf, i) == RT_ELF_IMPORT_FUNCTION)
+            if (rt_elf_import_kind(o->elf, i) == RT_ELF_IMPORT_FUNCTION && o->provider[i] != WEAK_ABSENT)
                 write_trampoline(o->tramp + i * TRAMPOLINE_SIZE, &o->called[i], (uint32_t)(k << 20 | i),
                                  (uint64_t)(uintptr_t)o->bound[i],
                                  o->provider[i] == MODULE ? objects[o->provider_object[i]].state : NULL);
@@ -852,8 +935,8 @@ int main(int argc, char **argv)
         const object *o = &objects[stopped_at >> 20];
         const size_t i = stopped_at & 0xfffff;
         const char *name = rt_elf_import_name(o->elf, i);
-        memcpy(stop_nid, name, RT_NID_SIZE - 1);
-        stop_name = symbol_of(name);
+        if (encoded_nid(name)) memcpy(stop_nid, name, RT_NID_SIZE - 1);
+        stop_name = encoded_nid(name) ? symbol_of(name) : name;
         stop_library = rt_elf_import_library(o->elf, i);
         stop_caller = o->label;
     }
@@ -910,7 +993,7 @@ int main(int argc, char **argv)
             size_t remaining = 0;
             for (size_t i = 0; i < objects[k].imports; i++)
                 remaining += objects[k].provider[i] == NONE || objects[k].provider[i] == RUNTIME_UNRESOLVED
-                          || objects[k].provider[i] == RUNTIME_DATA_PENDING;
+                          || objects[k].provider[i] == RUNTIME_DATA_PENDING || objects[k].provider[i] == WEAK_ABSENT;
             fprintf(f, "%s{\"name\": ", k > 1 ? ", " : "");
             json_string(f, objects[k].label);
             fprintf(f, ", \"imports\": %zu, \"imports_remaining\": %zu, \"exports\": %zu", objects[k].imports, remaining,
