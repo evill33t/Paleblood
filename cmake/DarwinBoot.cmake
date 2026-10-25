@@ -128,3 +128,6 @@ set_tests_properties(process_data_boot PROPERTIES TIMEOUT 30
 # this target runs the actual whole-process x86-64 guest fixture.
 add_test(NAME weak_boot COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_weak_boot.py -v)
 set_tests_properties(weak_boot PROPERTIES TIMEOUT 45 ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
+
+# Owned output-stream provider and whole-process guest fixtures.
+include(${CMAKE_CURRENT_LIST_DIR}/ConsoleTests.cmake)

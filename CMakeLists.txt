@@ -220,3 +220,5 @@ add_test(NAME weak_loader COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/te
 set_tests_properties(weak_loader PROPERTIES TIMEOUT 30 ENVIRONMENT "BB_LOADER=$<TARGET_FILE:pbloader>")
 add_test(NAME weak_boot COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_weak_boot.py -v)
 set_tests_properties(weak_boot PROPERTIES TIMEOUT 45 ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
+
+include(${PROJECT_SOURCE_DIR}/cmake/ConsoleTests.cmake)
