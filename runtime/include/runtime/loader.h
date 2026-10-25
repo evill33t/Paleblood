@@ -37,9 +37,25 @@ typedef struct {
     uint64_t vaddr, filesz, memsz, align;
 } rt_elf_tls;
 
+/* Raw ELF st_info binding/type, the complete st_other byte, and st_shndx.
+   Values are retained without inferring supported visibility, address or TLS semantics. */
+typedef struct {
+    uint8_t binding, type, other;
+    uint16_t section;
+} rt_elf_symbol;
+
+/* The shared unresolved-weak profile, not a general ELF symbol-resolution algorithm.
+   Other visibility encodings, sections and symbol types need an explicit provider policy. */
+static inline int rt_elf_symbol_can_be_null(const rt_elf_symbol *symbol)
+{
+    return symbol && symbol->section == 0 && symbol->binding == 2 && symbol->other == 0
+        && symbol->type <= 2; /* STT_NOTYPE, STT_OBJECT, STT_FUNC */
+}
+
 enum { RT_ELF_IMPORT_FUNCTION = 0, RT_ELF_IMPORT_DATA = 1, RT_ELF_IMPORT_OTHER = 2 };
 
-/* Returns the host address an import is bound to: a function's entry, or an object's storage. */
+/* Returns the host address an import is bound to: a function's entry, or an object's storage.
+   Zero declares an unresolved reference; see rt_elf_map for its restricted weak-symbol policy. */
 typedef uint64_t (*rt_elf_bind_fn)(void *user, size_t import_index, int kind);
 
 /* Reads and checks the executable. On failure returns NULL with a message in `error`. */
@@ -63,23 +79,31 @@ size_t rt_elf_load_count(const rt_elf *elf);
 const rt_elf_load *rt_elf_loads(const rt_elf *elf);
 size_t rt_elf_relocation_count(const rt_elf *elf);
 
-/* Imports, in the order their first relocation names them: "NID#library#module". */
+/* Imports, in first-relocation order. Names may be plain or "NID#library#module".
+   References are deduplicated only when name and all rt_elf_symbol fields match.
+   Size is the maximum declaration size of identical references. */
 size_t rt_elf_import_count(const rt_elf *elf);
 const char *rt_elf_import_name(const rt_elf *elf, size_t index);
 int rt_elf_import_kind(const rt_elf *elf, size_t index);
+/* Raw metadata pointers remain valid until close; an out-of-range index returns NULL. */
+const rt_elf_symbol *rt_elf_import_symbol(const rt_elf *elf, size_t index);
 uint64_t rt_elf_import_size(const rt_elf *elf, size_t index);
 int rt_elf_import_has_function_addend(const rt_elf *elf, size_t index);
 /* The library an import comes from ("libkernel", "libc", ...), or NULL if not named. */
 const char *rt_elf_import_library(const rt_elf *elf, size_t index);
 
-/* Exports (a module's defined symbols named "NID#library#module"): the name, the exporting
-   library's name, the symbol's offset in the image, and RT_ELF_IMPORT_FUNCTION or _DATA. */
+/* All defined global/weak symbols, including plain names and raw special section/type values.
+   Catalogue presence does not admit a provider: callers must decide supported type, visibility
+   and section semantics. Value is raw st_value, not necessarily an image offset (e.g. ABS/TLS).
+   A plain name has no exporting-library name. */
 size_t rt_elf_export_count(const rt_elf *elf);
 const char *rt_elf_export_name(const rt_elf *elf, size_t index);
 const char *rt_elf_export_library(const rt_elf *elf, size_t index);
 uint64_t rt_elf_export_value(const rt_elf *elf, size_t index);
 uint64_t rt_elf_export_size(const rt_elf *elf, size_t index);   /* the symbol's size in bytes */
 int rt_elf_export_kind(const rt_elf *elf, size_t index);
+/* Same pointer lifetime and invalid-index contract as rt_elf_import_symbol. */
+const rt_elf_symbol *rt_elf_export_symbol(const rt_elf *elf, size_t index);
 
 /* The module id written by R_X86_64_DTPMOD64 relocations (dynamic TLS); 1 unless set before
    rt_elf_map. */
@@ -88,8 +112,13 @@ void rt_elf_set_tls_module_id(rt_elf *elf, uint64_t id);
 /* Copies all admitted image ranges into `base` (rt_elf_image_size bytes, writable,
    reserved by the caller),
    zero-fills, and applies the relocations, binding imports through `bind`. Segment flags do not
-   change this writable-buffer contract or apply permissions. Returns 0, or -1 with
-   a message in `error`. */
+   change this writable-buffer contract or apply permissions. A zero binding is admitted only
+   for STB_WEAK (2), raw type NOTYPE (0), OBJECT (1) or FUNC (2), and st_other exactly zero.
+   Every other unresolved reference fails. The caller is responsible for establishing absence
+   of an eligible definition; this routine supplies no fallback object or callable stub.
+   R_X86_64_64 retains the signed addend even when the symbol binds to zero; GLOB_DAT and
+   JUMP_SLOT write the binding without an addend. Returns 0, or -1 with a message in `error`.
+   Mapping failures may already have copied image bytes; mapping is not transactional. */
 int rt_elf_map(const rt_elf *elf, void *base, rt_elf_bind_fn bind, void *user, char *error, size_t error_size);
 
 /* Rewrite each exact 9-byte `mov rax, fs:[0]` pattern to the same-length
