@@ -161,3 +161,18 @@ add_test(NAME module_start_boot
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_boot.py -v)
 set_tests_properties(module_start_boot PROPERTIES TIMEOUT 45
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
+
+# Explicit owned process data and its publication boundary (no firmware fixtures).
+add_executable(test_process_data test/test_process_data.c runtime/syslib/table.c)
+target_include_directories(test_process_data PRIVATE runtime/include)
+target_link_libraries(test_process_data PRIVATE Threads::Threads)
+add_test(NAME process_data COMMAND test_process_data)
+add_test(NAME process_data_empty COMMAND test_process_data empty)
+add_test(NAME process_data_trailing COMMAND test_process_data trailing)
+add_test(NAME process_data_backslash COMMAND test_process_data backslash)
+set_tests_properties(process_data process_data_empty process_data_trailing process_data_backslash
+    PROPERTIES TIMEOUT 10)
+add_test(NAME process_data_boot
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_process_data_boot.py -v)
+set_tests_properties(process_data_boot PROPERTIES TIMEOUT 30
+    ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")

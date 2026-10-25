@@ -37,6 +37,7 @@ typedef struct {
     const char *library, *symbol;
     void *address;
     size_t size;
+    int (*ready)(void);    /* optional acquire gate; NULL means always available */
 } rt_syslib_data;
 const rt_syslib_data *rt_syslib_data_begin(void);
 const rt_syslib_data *rt_syslib_data_end(void);
@@ -67,10 +68,12 @@ const rt_syslib_entry *rt_syslib_end(void);
 #else
 #define RT_SYSLIB_DATA_SECTION "rt_sysdata"
 #endif
-#define RT_SYSLIB_DATA(library, symbol, object) \
+#define RT_SYSLIB_DATA_WITH_READY(library, symbol, object, ready) \
     __attribute__((used, section(RT_SYSLIB_DATA_SECTION), aligned(sizeof(void *)))) \
     static const rt_syslib_data RT_SYSLIB_CAT(rt_syslib_data_, __LINE__) = \
-        {library, #symbol, (void *)&(object), sizeof(object)}
+        {library, #symbol, (void *)&(object), sizeof(object), ready}
+#define RT_SYSLIB_DATA(library, symbol, object) \
+    RT_SYSLIB_DATA_WITH_READY(library, symbol, object, NULL)
 
 #ifdef __cplusplus
 }
