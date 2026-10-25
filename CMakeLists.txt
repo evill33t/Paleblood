@@ -51,3 +51,17 @@ add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+
+# Owned per-thread module blocks and the actual TLS registry entry.
+find_package(Threads REQUIRED)
+add_executable(test_module_tls test/test_module_tls.c runtime/syslib/kernel_tls.c
+               runtime/syslib/table.c)
+target_include_directories(test_module_tls PRIVATE runtime/include)
+target_link_libraries(test_module_tls PRIVATE Threads::Threads)
+add_test(NAME module_tls COMMAND test_module_tls)
+set_tests_properties(module_tls PROPERTIES TIMEOUT 10)
+
+add_test(NAME module_tls_boot
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
+set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
+    ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
