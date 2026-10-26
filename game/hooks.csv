@@ -11,6 +11,7 @@ address,replacement,system
 0x0149e900,bb_render_record_tuple_parameter_supported,render
 0x0149e960,bb_render_record_tuple_transform_classification,render
 0x0149ea20,bb_render_record_tuple_classification_group,render
+0x0149ea70,bb_render_record_tuple_alternate_classification,render
 0x016efd00,bb_event_emk_add,event
 0x017cfcc0,bb_event_flag_write,event
 0x01972900,bb_input_pad_step_01972900,input
