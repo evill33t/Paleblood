@@ -10,6 +10,7 @@ address,size,name,system,status,notes
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
 0x01471600,190,render_record_constructor_pack_pair,render,replaced,272B FDE includes2B padding/80B table. Pack full DWORD pair key; preserve original first-selector flag gate. Unvalidated progress.
+0x01485f90,1410,render_record_constructor,render,replaced,"1411B FDE includes final NOP. Preserve44B clear, partial record/P/Q writes, signed first-selector gate and packed64 return. Unvalidated progress."
 0x0149e2d0,295,render_record_constructor_optional_first,render,replaced,"Align paired components; preserve pre-increment product and55-bit quantity, ordered8/4/4/4 optional outputs. Unvalidated progress."
 0x0149e400,358,render_record_constructor_optional_second,render,replaced,359B FDE includes final NOP. Geometry wrapper publishes zeroed/partial scratch8/4/4/4 even on error. Unvalidated progress.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
