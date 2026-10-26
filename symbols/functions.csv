@@ -9,6 +9,7 @@ address,size,name,system,status,notes
 0x0143e490,174,frame_timing_task_flush_queue_0143e490,frame_timing,verified,"task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock"
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
+0x0149c660,486,render_record_geometry_resolve_parameter_index,render,replaced,487B FDE; catalog cuts final JMP. Ordered admissions and wrapping scales resolve indices0..4/8..12. Unvalidated progress.
 0x0149e8d0,40,render_record_geometry_round_up_power_of_two,render,replaced,Wrapping DWORD next-power-of-two; zero and overflow return zero. Unvalidated progress.
 0x0149e920,18,render_record_geometry_index_logarithm,render,replaced,Float-conversion exponent extraction preserves current rounding and zero underflow. Unvalidated progress.
 0x0149ea90,40,render_record_geometry_category,render,replaced,Bounded table category bits22..24; success-only ordered DWORD publication. Unvalidated progress.
