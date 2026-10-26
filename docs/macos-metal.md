@@ -11,8 +11,8 @@ The Metal unit creates a device, command queue and RGBA8Unorm offscreen texture,
 render-pass clear/store, then reads pixels after command-buffer completion. It also accepts complete RGBA8 frames
 through a synchronous CPU upload to the same texture. This first
 shared-texture implementation requires a unified-memory Metal device. Successful CMake
-configuration or compilation does not prove that a suitable device exists. There is no
-window, presentation, game shader translation or guest execution in this unit.
+configuration or compilation does not prove that a suitable device exists. A borrowed `CAMetalLayer` can now present completed frames. Game shader translation,
+guest GPU commands and guest execution are not connected to this unit.
 
 Use Apple Clang and an installed macOS SDK. The intended deployment target is macOS 13 or
 newer. For a native Apple Silicon library build, from the repository root:
@@ -61,4 +61,68 @@ for the normal GCC and Clang builds.
 This native Metal library does not bridge ARM64 and x86-64 guest execution in one process.
 Complete Darwin services, the engine's real render/resource contracts, shader support and
 a whole-code recompilation or separately established guest-execution strategy remain needed
-for gameplay. `MTKView`/`CAMetalLayer` presentation is a future unit, not part of this clear test.
+for gameplay. Native frame presentation is an independent host primitive; it does not supply
+the game renderer or a guest GPU bridge.
+
+## Presenting completed frames
+
+The caller creates a `CAMetalLayer`, attaches it to its own view/window, then calls
+`rt_metal_offscreen_configure_layer`. Pass the Objective-C object using an unretained bridge to
+`void *`. Configuration assigns this context's device, `BGRA8Unorm`, its exact pixel dimensions,
+`allowsNextDrawableTimeout=YES` and `presentsWithTransaction=NO`. The caller still controls
+bounds, `contentsScale`, `framebufferOnly`, attachment, resizing, window and application policy.
+The library does not create an `NSApplication` or window, detach a layer, or restore its previous
+configuration when the context is destroyed. Configuration and presentation require the main
+thread. Serialize all context operations and all use or mutation of the borrowed layer.
+
+After a successful upload or clear, call `rt_metal_offscreen_present`. It rechecks the layer
+profile and uses a fixed fullscreen Metal shader to read the source texel at each fragment's
+pixel coordinates. Source and drawable extents must match. The render pass performs no scaling,
+vertical flip, channel swizzle or alpha blending. Logical RGBA output is stored by Metal in the
+BGRA drawable format. Core Animation may still scale the result to the layer's bounds and apply
+its display color processing; this API does not establish physical display pixel/color identity.
+
+The optional `rt_metal_bgra_readback` captures the actual rendered drawable for diagnostics.
+Set the layer's `framebufferOnly=NO` when requesting it. The implementation encodes a texture
+blit into owned shared storage **before** presentation, then copies BGRA rows to caller memory
+only after successful GPU completion. Caller padding is preserved and capacity may end at the
+final pixel. `NULL` capture avoids readback allocation and copying, and permits the usual
+framebuffer-only drawable. Invalid input and backend failures leave capture memory unchanged.
+The implementation follows Apple's
+[drawable readback ordering](https://developer.apple.com/documentation/metal/reading-pixel-data-from-a-drawable-texture);
+a drawable cannot be read after presentation to verify its former contents.
+
+`RT_METAL_OK` means the GPU commands completed and presentation was scheduled. It does not mean
+the display presented that frame. A caller can observe a drawable's
+[presented handler](https://developer.apple.com/documentation/metal/mtldrawable/addpresentedhandler(_:))
+and a positive [presented time](https://developer.apple.com/documentation/metal/mtldrawable/presentedtime)
+for that separate fact. The `timeout_ms` argument bounds the GPU wait after command submission.
+Lazy shader/pipeline compilation is outside this bound, as is `nextDrawable`, which uses its
+[system acquisition timeout](https://developer.apple.com/documentation/quartzcore/cametallayer/allowsnextdrawabletimeout).
+`RT_METAL_NO_DRAWABLE` leaves the context usable. GPU failure or a GPU-wait timeout poisons it;
+destroy the context before reuse. Timeout does not cancel submitted work, and a frame may still
+present later. Command resources and strong layer/drawable callback references survive the wait;
+no callback references the context, a stack semaphore address or caller capture memory.
+
+The presentation test is separately opt-in because it opens and closes its own small window and
+requires a logged-in graphical macOS session and a real Metal device:
+
+```sh
+cmake -S . -B build-metal-window -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DPB_METAL_ONLY=ON -DPB_ENABLE_METAL_SMOKE_TEST=ON -DPB_ENABLE_METAL_PRESENTATION_TEST=ON
+cmake --build build-metal-window --parallel 2
+ctest --test-dir build-metal-window -R '^metal_' --output-on-failure
+```
+
+The fixture runs within its own AppKit application event loop, owns its application/window
+policy, observes genuine `CAMetalLayer` drawables, and
+checks exact pre-present BGRA pixels, all channels/row order, capture padding, validation before
+acquisition, framebuffer-only presentation without capture, and three separately verified positive presentation timestamps. It explicitly records a startup
+submission after initial configuration and after the final capture-profile restoration; an
+initial skipped frame is not counted as a verified presentation. Each checked frame must have
+its own positive timestamp, independent of those startup observations. The fixture submits at
+a fixed 10Hz while servicing AppKit events; it does not retry until a frame is displayed.
+Application frame pacing remains with the caller, outside this synchronous primitive.
+It fails on an unavailable GPU, missing presentation or pixel mismatch, with a 30-second CTest
+limit. It does not capture the user's screen, verify scanout colors, translate guest graphics,
+or force device loss, allocation exhaustion or hardware timeout. Ordinary Metal builds and the
+existing smoke option do not register this window test.
