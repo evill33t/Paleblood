@@ -33,3 +33,4 @@ address,size,name,system,status,notes
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02ab0ce0,326,render_command_submit_batch,render,replaced,Update counter through original operations; submit ordered nonempty command regions and flip parameters; preserve packed handle/index; delegate snapshot-only path
+0x02ab0e30,213,render_command_submit_snapshot,render,replaced,Initialize temporary region; submit nonempty snapshot regions with zeroextended video handle; empty regions do not read the flip record
