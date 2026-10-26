@@ -15,6 +15,7 @@ address,replacement,system
 0x0149eac0,bb_render_record_geometry_classification,render
 0x0149eb20,bb_render_record_geometry_first_exponent,render
 0x0149eb50,bb_render_record_geometry_second_exponent,render
+0x0149ed30,bb_render_record_geometry_parameters,render
 0x016efd00,bb_event_emk_add,event
 0x017cfcc0,bb_event_flag_write,event
 0x01972900,bb_input_pad_step_01972900,input

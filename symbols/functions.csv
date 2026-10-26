@@ -16,6 +16,7 @@ address,size,name,system,status,notes
 0x0149eac0,40,render_record_geometry_classification,render,replaced,Bounded table classification bits2..5; failure leaves output untouched. Unvalidated progress.
 0x0149eb20,40,render_record_geometry_first_exponent,render,replaced,Bounded table first exponent bits11..13; success-only DWORD output. Unvalidated progress.
 0x0149eb50,40,render_record_geometry_second_exponent,render,replaced,Bounded table second exponent bits25..26; success-only DWORD output. Unvalidated progress.
+0x0149ed30,174,render_record_geometry_parameters,render,replaced,175B FDE includes final NOP. Resolve index then publish four optional two-bit fields in order. Unvalidated progress.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
