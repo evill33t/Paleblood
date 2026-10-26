@@ -11,4 +11,5 @@ namespace render {
 constexpr uint32_t record_encoding_metadata_entries = 59;
 using RecordEncodingMetadataTable = uint32_t[record_encoding_metadata_entries];
 RT_GLOBAL(0x04b2bdd0, record_encoding_metadata, RecordEncodingMetadataTable);
+RT_GLOBAL(0x04b2bcd0, record_encoding_component_rules, RecordEncodingMetadataTable);
 }  // namespace render
