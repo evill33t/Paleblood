@@ -32,4 +32,9 @@ inline uint32_t record_read_word_14_low5(const RecordConstructorPrefix *record)
     constexpr uint32_t field_mask = 31;
     return record->pair_10.high.get() & field_mask;
 }
+
+inline void record_store_word_00(RecordConstructorPrefix *record, uint32_t value)
+{
+    record->pair_00.low.set(value);
+}
 }  // namespace render
