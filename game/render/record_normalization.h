@@ -82,15 +82,59 @@ static_assert(offsetof(NormalizedRecordMode4, mode) == 0x38);
 static_assert(offsetof(NormalizedRecordMode4, status) == 0x3c);
 static_assert(sizeof(NormalizedRecordMode4) == 0x40);
 
+struct RecordMode3Input {
+    uint32_t component_00;
+    uint32_t component_04;
+    uint32_t count_08;
+    uint32_t parameter_0c;
+    uint32_t selector;
+    uint32_t parameter_14;
+    uint32_t parameter_18;
+    uint32_t parameter_1c;
+    uint32_t parameter_20;
+    uint32_t parameter_24;
+    uint32_t flags;
+    uint32_t extra_2c;
+};
+static_assert(offsetof(RecordMode3Input, selector) == 0x10);
+static_assert(offsetof(RecordMode3Input, parameter_14) == 0x14);
+static_assert(offsetof(RecordMode3Input, parameter_18) == 0x18);
+static_assert(offsetof(RecordMode3Input, parameter_1c) == 0x1c);
+static_assert(offsetof(RecordMode3Input, parameter_20) == 0x20);
+static_assert(offsetof(RecordMode3Input, flags) == 0x28);
+static_assert(sizeof(RecordMode3Input) == 0x30);
+struct NormalizedRecordMode3 {
+    RecordMode3Input input;
+    uint32_t mapping;
+    uint32_t supplied;
+    uint32_t secondary;
+    uint32_t tertiary;
+    uint8_t mode;
+    uint8_t unknown_0x41[0x3];
+    uint32_t status;
+};
+static_assert(offsetof(NormalizedRecordMode3, input) == 0x0);
+static_assert(offsetof(NormalizedRecordMode3, mapping) == 0x30);
+static_assert(offsetof(NormalizedRecordMode3, supplied) == 0x34);
+static_assert(offsetof(NormalizedRecordMode3, secondary) == 0x38);
+static_assert(offsetof(NormalizedRecordMode3, tertiary) == 0x3c);
+static_assert(offsetof(NormalizedRecordMode3, mode) == 0x40);
+static_assert(offsetof(NormalizedRecordMode3, status) == 0x44);
+static_assert(sizeof(NormalizedRecordMode3) == 0x48);
+
 RT_ORIGINAL(0x02ab7310, translate_record_selector, uint32_t(uint32_t *mapping, uint32_t selector));
 RT_ORIGINAL(0x02abaf10, derive_record_parameter,
             uint32_t(uint32_t kind, uint32_t selector, uint32_t first, uint32_t second, uint32_t flags));
 RT_ORIGINAL(0x0149cb30, apply_record_mapping,
-            uint32_t(uint32_t *value, uint32_t derived, uint32_t mapping, uint32_t one));
+            uint32_t(uint32_t *value, uint32_t derived, uint32_t mapping, uint32_t parameter));
 RT_ORIGINAL(0x02abb4a0, report_record_normalization_error, void(uint32_t status));
 RT_ORIGINAL(0x02ab7720, translate_record_secondary, uint32_t(uint32_t *value, uint32_t selector));
 RT_ORIGINAL(0x02abb4f0, record_has_tertiary_parameter, uint8_t(uint32_t parameter, uint32_t selector));
 RT_ORIGINAL(0x02ab78a0, translate_record_tertiary, uint32_t(uint32_t *value, uint32_t selector));
+
+RT_ORIGINAL(0x02ab7ab0, combine_record_parameters,
+            uint32_t(uint32_t first, uint32_t second, uint32_t flag));
+RT_ORIGINAL(0x02ab7e40, reduce_record_parameter, uint32_t(uint32_t value));
 
 constexpr uint32_t normalization_failed = 8;
 constexpr uint32_t fixed_record_selector = 0x16;

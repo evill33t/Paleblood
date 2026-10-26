@@ -31,6 +31,7 @@ address,size,name,system,status,notes
 0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60"
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025710a0,301,render_record_normalize_mode2,render,replaced,"Normalize mode-2 input; preserve ordered 36-byte copy, supplied parameter bypass and helper error/status ordering. Static source; validation deferred."
+0x025711d0,361,render_record_normalize_mode3,render,replaced,Normalize mode-3 input; ordered 48-byte copy; cache mapping across conditional parameter helpers; preserve statuses and padding. Validation deferred.
 0x02571340,303,render_record_normalize_mode4,render,replaced,"Normalize mode-4 input; preserve ordered 40-byte copy, optional parameter path and status/reload ordering. Static source; validation deferred."
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02ab7310,629,render_record_translate_selector,render,replaced,Selector mapping: write one DWORD; return 0 for supported selectors or 12 with zero output. 629 code bytes; embedded table stays private. Validation deferred.
