@@ -42,4 +42,9 @@ inline void record_store_word_1c(RecordConstructorPrefix *record, uint32_t value
 {
     record->pair_18.high.set(value);
 }
+
+inline void record_store_word_24(RecordConstructorPrefix *record, uint32_t value)
+{
+    record->pair_20.high.set(value);
+}
 }  // namespace render
