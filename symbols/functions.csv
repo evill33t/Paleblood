@@ -32,3 +32,4 @@ address,size,name,system,status,notes
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02ad5dd0,27,render_swap_chain_present_mode,render,replaced,Swap-chain mode facade: unsigned low-32 validation before object read; preserve full-width source argument and forward to presentation state
+0x02ad6e50,499,render_swap_chain_submit,render,replaced,Owner-thread present: wait for flip slot; prepare selected buffer; submit; increment and notify only on success; recheck context ownership
