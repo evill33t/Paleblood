@@ -19,12 +19,16 @@ struct PresentSourcePayloadView {
     uint16_t record_parameter_30;
     uint8_t record_count_32;
     uint8_t record_selector_33;
+    uint16_t parameter_34;
+    uint16_t parameter_36;
 };
 static_assert(offsetof(PresentSourcePayloadView, count_input_2c) == 0x2c);
 static_assert(offsetof(PresentSourcePayloadView, count_input_2e) == 0x2e);
 static_assert(offsetof(PresentSourcePayloadView, record_parameter_30) == 0x30);
 static_assert(offsetof(PresentSourcePayloadView, record_count_32) == 0x32);
 static_assert(offsetof(PresentSourcePayloadView, record_selector_33) == 0x33);
+static_assert(offsetof(PresentSourcePayloadView, parameter_34) == 0x34);
+static_assert(offsetof(PresentSourcePayloadView, parameter_36) == 0x36);
 
 struct PresentSourceView {
     uint8_t unknown_0x00[0x18];
@@ -46,7 +50,7 @@ RT_ORIGINAL(0x02565130, calculate_present_record_count,
             uint32_t(uint32_t first, uint32_t second, uint32_t third));
 RT_ORIGINAL(0x0256e1d0, build_present_source_record,
             uint32_t(PresentSourceRecord *, PresentSourcePayloadView *, uint32_t selector,
-                     uint32_t index, uint32_t zero, uint32_t parameter));
+                     uint32_t index, uintptr_t range_begin, uint32_t parameter));
 RT_ORIGINAL(0x02ab5a70, consume_present_source_record,
             void(PresentSourceContext *, PresentSourceRecord *, PresentSourcePayloadView *,
                  uint32_t zero, uint32_t parameter, uint32_t trailing_zero));
