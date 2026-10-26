@@ -9,6 +9,7 @@ address,size,name,system,status,notes
 0x0143e490,174,frame_timing_task_flush_queue_0143e490,frame_timing,verified,"task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock"
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
+0x0149c850,672,render_record_apply_parameter_tuple,render,replaced,Select one output code from normalization tuple; ordered overrides and rejection preserve output. Static source only; validation deferred.
 0x0149e900,16,render_record_tuple_parameter_supported,render,replaced,Nonzero power-of-two test with Boolean AL interface. Static source only; validation deferred.
 0x0149e960,129,render_record_tuple_transform_classification,render,replaced,Transform admitted classifications after wrapping 32-bit scaling and unsigned thresholds. Static source only; validation deferred.
 0x0149ea20,28,render_record_tuple_classification_group,render,replaced,Bounded classification-to-group lookup with fallback one and original shared table. Static source only; validation deferred.
