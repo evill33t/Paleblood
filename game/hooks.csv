@@ -9,6 +9,7 @@ address,replacement,system
 0x0143f9f0,bb_frame_timing_task_set_frame_value_0143f9f0,frame_timing
 0x014400a0,bb_frame_timing_task_workers_step_014400a0,frame_timing
 0x0149e900,bb_render_record_tuple_parameter_supported,render
+0x0149ea20,bb_render_record_tuple_classification_group,render
 0x016efd00,bb_event_emk_add,event
 0x017cfcc0,bb_event_flag_write,event
 0x01972900,bb_input_pad_step_01972900,input
