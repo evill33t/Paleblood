@@ -32,3 +32,4 @@ address,replacement,system
 0x025710a0,bb_render_record_normalize_mode2,render
 0x02571340,bb_render_record_normalize_mode4,render
 0x025b2fb0,bb_render_swap_chain_present,render
+0x02ab7310,bb_render_record_translate_selector,render
