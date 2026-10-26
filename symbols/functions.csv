@@ -11,6 +11,7 @@ address,size,name,system,status,notes
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
 0x0149e8d0,40,render_record_geometry_round_up_power_of_two,render,replaced,Wrapping DWORD next-power-of-two; zero and overflow return zero. Unvalidated progress.
 0x0149e920,18,render_record_geometry_index_logarithm,render,replaced,Float-conversion exponent extraction preserves current rounding and zero underflow. Unvalidated progress.
+0x0149ea90,40,render_record_geometry_category,render,replaced,Bounded table category bits22..24; success-only ordered DWORD publication. Unvalidated progress.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
