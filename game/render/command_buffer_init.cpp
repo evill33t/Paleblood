@@ -6,7 +6,7 @@
 
 namespace {
 RT_ORIGINAL(0x014712b0, default_command_space_callback,
-            void(render::CommandSubmissionContext *, uintptr_t zero, uintptr_t argument));
+            uint8_t(render::CommandSubmissionContext *, uint32_t requested_words, uintptr_t argument));
 }  // namespace
 
 extern "C" void bb_render_command_buffer_init(render::CommandBufferSnapshot *self,

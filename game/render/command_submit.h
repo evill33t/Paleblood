@@ -13,7 +13,9 @@ namespace render {
 
 struct CommandSubmissionContext;
 constexpr uint32_t command_word_bytes = 4;
-using CommandSpaceCallback = void (*)(CommandSubmissionContext *, uintptr_t zero, uintptr_t argument);
+// Packet writers inspect AL after requesting a number of DWORDs; present paths ignore it.
+using CommandSpaceCallback = uint8_t (*)(CommandSubmissionContext *, uint32_t requested_words,
+                                        uintptr_t argument);
 
 struct CommandBufferSnapshot {
     uintptr_t begin;
