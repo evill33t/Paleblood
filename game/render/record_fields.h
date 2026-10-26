@@ -52,4 +52,10 @@ inline uint32_t record_read_word_00(const RecordConstructorPrefix *record)
 {
     return record->pair_00.low.get();
 }
+
+inline uint32_t record_read_word_08_low22(const RecordConstructorPrefix *record)
+{
+    constexpr uint32_t field_mask = 0x003fffff;
+    return record->pair_08.low.get() & field_mask;
+}
 }  // namespace render
