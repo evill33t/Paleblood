@@ -30,6 +30,7 @@ address,size,name,system,status,notes
 0x02434770,2077,frame_timing_pace_frame,frame_timing,verified,Frame limiter: target interval at +0x18 (1/30 or 1/60 s); sleeps then spins; 32-frame ring; every FPS patch edits it
 0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60"
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
+0x02564ed0,25,render_present_encoding_units,render,replaced,Bounds-check wrapped encoding-minus-one; return full QWORD from named 99-entry table or zero. Static reconstruction; validation deferred.
 0x02565130,30,render_present_record_bit_width,render,replaced,Bit width of three uint32 components; all zero returns zero; present-source fallback passes third=1. Static reconstruction; validation deferred.
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02ad1eb0,194,render_present_source_prepare,render,replaced,Prepare source state; cached explicit/derived record count; abort on builder error; reload consumer parameter. Static reconstruction; validation deferred.

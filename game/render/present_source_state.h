@@ -42,7 +42,7 @@ struct PresentCommandContextPrefix {
 };
 static_assert(offsetof(PresentCommandContextPrefix, commands) == 0x10);
 
-RT_ORIGINAL(0x02564ed0, present_encoding_units, uint32_t(uint32_t encoding));
+RT_ORIGINAL(0x02564ed0, present_encoding_units, uint64_t(uint32_t encoding));
 RT_ORIGINAL(0x01473840, emit_present_slot_value,
             void(PresentCommandToken *, uint32_t index, const uint64_t *value));
 }  // namespace render
