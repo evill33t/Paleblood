@@ -24,4 +24,12 @@ RT_ORIGINAL(0x014867e0, record_set_word_10_byte_at_bit14,
             uint32_t(RecordConstructorPrefix *record, uint8_t value));
 RT_ORIGINAL(0x01486800, record_set_word_28_low22,
             uint32_t(RecordConstructorPrefix *record, uint32_t value));
+
+// Inline forms apply to observed builder uses; the original short entries stay
+// unhooked. Store-only forms are logically void and do not preserve ambient RAX.
+inline uint32_t record_read_word_14_low5(const RecordConstructorPrefix *record)
+{
+    constexpr uint32_t field_mask = 31;
+    return record->pair_10.high.get() & field_mask;
+}
 }  // namespace render
