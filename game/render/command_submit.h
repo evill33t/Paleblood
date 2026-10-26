@@ -84,9 +84,14 @@ RT_ORIGINAL(0x01471270, initialize_command_buffer,
 RT_ORIGINAL(0x02ab0e30, submit_snapshot,
             void(const FlipSubmission *, const CommandBufferSnapshot *));
 
+enum class SubmitHandleArgument {
+    packed_video_and_index,
+    video_only,
+};
+
 // Submit only nonempty regions, in the supplied order. The native batch delegate forwards
 // the complete handle/index word, while the snapshot delegate zeroextends just the handle.
 void submit_command_regions(const CommandBufferSnapshot &first, const CommandBufferSnapshot &second,
-                            const FlipSubmission &submission, uint64_t handle_word);
+                            const FlipSubmission *submission, SubmitHandleArgument handle_argument);
 
 }  // namespace render
