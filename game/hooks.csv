@@ -13,6 +13,7 @@ address,replacement,system
 0x01486710,bb_render_record_set_word_08_low22,render
 0x01486760,bb_render_record_set_word_14_second_low5_field,render
 0x014867c0,bb_render_record_set_word_10_byte_at_bit13,render
+0x014867e0,bb_render_record_set_word_10_byte_at_bit14,render
 0x016efd00,bb_event_emk_add,event
 0x017cfcc0,bb_event_flag_write,event
 0x01972900,bb_input_pad_step_01972900,input
