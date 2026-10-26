@@ -47,4 +47,9 @@ inline void record_store_word_24(RecordConstructorPrefix *record, uint32_t value
 {
     record->pair_20.high.set(value);
 }
+
+inline uint32_t record_read_word_00(const RecordConstructorPrefix *record)
+{
+    return record->pair_00.low.get();
+}
 }  // namespace render
