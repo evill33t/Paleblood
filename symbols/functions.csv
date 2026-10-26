@@ -33,3 +33,4 @@ address,size,name,system,status,notes
 0x02565130,30,render_present_record_bit_width,render,replaced,Bit width of three uint32 components; all zero returns zero; present-source fallback passes third=1. Static reconstruction; validation deferred.
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02ad1eb0,194,render_present_source_prepare,render,replaced,Prepare source state; cached explicit/derived record count; abort on builder error; reload consumer parameter. Static reconstruction; validation deferred.
+0x02ad1f80,385,render_present_source_flush_state,render,replaced,Flush changed slot values from selected bank; preserve cached skip paths and post-command reloads. Static reconstruction; validation deferred.

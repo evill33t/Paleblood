@@ -32,3 +32,4 @@ address,replacement,system
 0x02565130,bb_render_present_record_bit_width,render
 0x025b2fb0,bb_render_swap_chain_present,render
 0x02ad1eb0,bb_render_present_source_prepare,render
+0x02ad1f80,bb_render_present_source_flush_state,render
