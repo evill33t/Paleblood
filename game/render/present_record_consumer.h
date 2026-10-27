@@ -10,6 +10,7 @@
 #include "present_preparation_inline.h"
 #include "present_register_packets.h"
 #include "present_command_controls.h"
+#include "present_command_configuration.h"
 #include "record_range_length.h"
 #include "record_range_begin.h"
 #include "record_option_value.h"
@@ -109,11 +110,6 @@ struct alignas(8) RecordRegisterState {
 };
 static_assert(sizeof(RecordRegisterState) == 0x8);
 
-RT_ORIGINAL(0x01496f60, configure_record_parameters,
-            void(RecordCommandBuffer *, uint32_t zero_x, uint32_t zero_y,
-                 uint32_t first, uint32_t second, float scalar, float zero));
-RT_ORIGINAL(0x01477150, configure_record_option,
-            void(RecordCommandBuffer *, uint32_t enabled, uint32_t zero));
 RT_ORIGINAL(0x02ace1e0, configure_record_shader,
             void(RecordShaderState *, RecordCommandBuffer *, SharedPresentDescriptor *,
                  SharedPresentDescriptor *optional_descriptor));
