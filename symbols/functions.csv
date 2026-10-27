@@ -10,6 +10,7 @@ address,size,name,system,status,notes
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
 0x01473650,116,render_configure_record_integer_pair,render,replaced,"Static pair packet; original raw input widths/order, AL-only admission and captured cursor publication. Logical void; unvalidated; validation deferred."
+0x014736d0,124,render_configure_record_ratio_pair,render,replaced,"Static pair packet; original raw input widths/order, AL-only admission and captured cursor publication. Logical void; unvalidated; validation deferred."
 0x014765e0,238,render_configure_record_transform,render,replaced,"Static packet source; native admission, ordered payload stores and live cursor aliasing retained. Known ignored-return profile. Unvalidated; validation deferred."
 0x01476790,135,render_configure_record_extent,render,replaced,"Static packet source; native admission, ordered payload stores and live cursor aliasing retained. Known ignored-return profile. Unvalidated; validation deferred."
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
