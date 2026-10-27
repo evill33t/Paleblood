@@ -10,6 +10,7 @@
 #include "present_preparation_inline.h"
 #include "present_register_packets.h"
 #include "present_command_controls.h"
+#include "record_option_value.h"
 #include "record_second_parameter.h"
 #include "record_first_parameter.h"
 #include "record_secondary_byte.h"
@@ -111,7 +112,6 @@ RT_ORIGINAL(0x02abaed0, record_range_length, uint32_t(uintptr_t extent));
 RT_ORIGINAL(0x01496f60, configure_record_parameters,
             void(RecordCommandBuffer *, uint32_t zero_x, uint32_t zero_y,
                  uint32_t first, uint32_t second, float scalar, float zero));
-RT_ORIGINAL(0x014868f0, record_option_value, uint32_t(PresentRecordView *));
 RT_ORIGINAL(0x01477150, configure_record_option,
             void(RecordCommandBuffer *, uint32_t enabled, uint32_t zero));
 RT_ORIGINAL(0x02ace1e0, configure_record_shader,
