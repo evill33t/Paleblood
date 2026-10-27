@@ -44,3 +44,4 @@ address,size,name,system,status,notes
 0x02aaddc0,393,render_allocate_shader_upload,render,replaced,Static source; 64KiB bins; zero-size class alias; acquire/reclaim/retry; live list updates and 32-bit capacities. Unvalidated; validation deferred.
 0x02ab9850,374,render_flush_shader_preparation,render,replaced,Static source; Bound8/15-entry dispatches; mode0 skips range reset; ordered paired clears and snapshotted event arguments. Unvalidated; validation deferred.
 0x02ace1e0,1016,render_configure_record_shader,render,replaced,Static source; Sparse maps and overlapping one-hot masks; optional full pointer; link scratch and invalidation order. Unvalidated; validation deferred.
+0x02ace5e0,5473,render_configure_record_shader_secondary,render,replaced,Static source; 27-case ordered two-bank binding; shared upload cache; NULL/empty distinction and live dirty clears. Unvalidated; validation deferred.

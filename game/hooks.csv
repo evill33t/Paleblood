@@ -43,3 +43,4 @@ address,replacement,system
 0x02aaddc0,bb_render_allocate_shader_upload,render
 0x02ab9850,bb_render_flush_shader_preparation,render
 0x02ace1e0,bb_render_configure_record_shader,render
+0x02ace5e0,bb_render_configure_record_shader_secondary,render
