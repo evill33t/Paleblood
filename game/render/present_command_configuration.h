@@ -8,6 +8,7 @@
 #pragma once
 
 #include "present_register_packets.h"
+#include "initialize_record_configuration_register.h"
 
 namespace render {
 RT_ORIGINAL(0x01477150, configure_record_option,
@@ -52,8 +53,6 @@ RT_ORIGINAL(0x014765e0, configure_record_transform,
             void(RecordCommandBuffer *, uint32_t zero, RecordConfigurationFloat3 *scale,
                  RecordConfigurationFloat3 *translation, uint32_t inherited_end_y,
                  float first, float second));
-RT_ORIGINAL(0x01485210, initialize_record_configuration_register,
-            void(RecordConfigurationRegister *));
 RT_ORIGINAL(0x01485220, set_record_configuration_register,
             uint32_t(RecordConfigurationRegister *, uint32_t));
 RT_ORIGINAL(0x01476980, emit_record_configuration_register,
