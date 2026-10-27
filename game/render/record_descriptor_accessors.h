@@ -48,4 +48,10 @@ inline uint32_t record_descriptor_first_field(const RecordDescriptorPrefix *reco
     constexpr uint32_t first_mask = 0x3fff;
     return record->pair_08.low.get() & first_mask;
 }
+inline uint32_t record_descriptor_second_field(const RecordDescriptorPrefix *record)
+{
+    constexpr unsigned second_shift = 14;
+    constexpr uint32_t second_mask = 0x3fff;
+    return (record->pair_08.low.get() >> second_shift) & second_mask;
+}
 }  // namespace render
