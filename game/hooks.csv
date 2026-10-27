@@ -11,6 +11,7 @@ address,replacement,system
 0x01471a40,bb_render_read_record_descriptor_component,render
 0x01488370,bb_render_record_descriptor_set_high_field,render
 0x0149c4e0,bb_render_initialize_record_geometry_flags,render
+0x014a27c0,bb_render_get_record_descriptor_size,render
 0x016efd00,bb_event_emk_add,event
 0x017cfcc0,bb_event_flag_write,event
 0x01972900,bb_input_pad_step_01972900,input
