@@ -34,3 +34,4 @@ address,size,name,system,status,notes
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02acfc20,207,render_finish_record_shader,render,replaced,Static source; two ordered dirty passes; cached controls and live command fields; late mode restore. Logical ignored-return profile; unvalidated.
+0x02ad1e30,55,render_clear_prepared_record,render,replaced,Static source; Restore record from bit0-selected bank with unboundedslot32; NULL/all-ones sentinels and wrapping payload+16. Unvalidated.
