@@ -14,6 +14,7 @@ address,size,name,system,status,notes
 0x01473320,117,render_emit_record_state_mode,render,replaced,"Static source; ordered 3-DWORD packet, captured-cursor publication, AL-only capacity callback. Logical void; unvalidated; validation deferred."
 0x014733a0,93,render_emit_record_register_c,render,replaced,"Static source; ordered 3-DWORD packet, captured-cursor publication, AL-only capacity callback. Logical void; unvalidated; validation deferred."
 0x01473400,93,render_emit_record_register_b,render,replaced,"Static source; ordered 3-DWORD packet, captured-cursor publication, AL-only capacity callback. Logical void; unvalidated; validation deferred."
+0x01475da0,101,render_begin_record_commands,render,replaced,Static command control; ordered packet stores and native live/captured cursor updates. Known ignored-return profile. Unvalidated; validation deferred.
 0x01485390,24,render_set_record_register_range,render,replaced,Static source; Pack firstbit0 and lastlow3bits; preserve other wordbits and return masked old word after DWORD store. Unvalidated; validation deferred.
 0x014853f0,16,render_set_record_register_enabled,render,replaced,Static source; Double the entire low inputbyte without Boolean normalization; preserve all but oldbit1 and return masked oldword. Unvalidated; validation deferred.
 0x01489c40,16,render_record_step_user_pa_enabled,render,replaced,"Static AL predicate from real sceGnmIsUserPaEnabled import; observed no-new-argument profile, service and upper RAX opaque. Unvalidated; validation deferred."
