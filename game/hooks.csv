@@ -15,6 +15,7 @@ address,replacement,system
 0x01489960,bb_render_record_descriptor_encoding,render
 0x0149cc60,bb_render_convert_record_descriptor_classification,render
 0x014a1e80,bb_render_initialize_record_level_descriptor,render
+0x014a2c40,bb_render_calculate_record_descriptor_level_offset,render
 0x016efd00,bb_event_emk_add,event
 0x017cfcc0,bb_event_flag_write,event
 0x01972900,bb_input_pad_step_01972900,input
