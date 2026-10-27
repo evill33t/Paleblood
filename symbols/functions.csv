@@ -11,6 +11,7 @@ address,size,name,system,status,notes
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
 0x01472fd0,86,render_emit_record_mask,render,replaced,"Static source; ordered 3-DWORD packet, captured-cursor publication, AL-only capacity callback. Logical void; unvalidated; validation deferred."
 0x01473090,109,render_emit_record_register_a,render,replaced,"Static source; ordered 3-DWORD packet, captured-cursor publication, AL-only capacity callback. Logical void; unvalidated; validation deferred."
+0x01473320,117,render_emit_record_state_mode,render,replaced,"Static source; ordered 3-DWORD packet, captured-cursor publication, AL-only capacity callback. Logical void; unvalidated; validation deferred."
 0x014733a0,93,render_emit_record_register_c,render,replaced,"Static source; ordered 3-DWORD packet, captured-cursor publication, AL-only capacity callback. Logical void; unvalidated; validation deferred."
 0x01473400,93,render_emit_record_register_b,render,replaced,"Static source; ordered 3-DWORD packet, captured-cursor publication, AL-only capacity callback. Logical void; unvalidated; validation deferred."
 0x01485390,24,render_set_record_register_range,render,replaced,Static source; Pack firstbit0 and lastlow3bits; preserve other wordbits and return masked old word after DWORD store. Unvalidated; validation deferred.
