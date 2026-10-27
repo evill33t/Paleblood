@@ -71,4 +71,8 @@ inline uint8_t record_descriptor_rounding_flag(const RecordDescriptorPrefix *rec
     constexpr uint8_t flag_mask = 2;
     return static_cast<uint8_t>((record->pair_08.high.bytes[high_byte] & flag_mask) >> flag_shift);
 }
+inline uint32_t record_encoding_byte_is_one(const uint32_t *encoding)
+{
+    return *reinterpret_cast<const uint8_t *>(encoding) == 1 ? 1 : 0;
+}
 }  // namespace render
