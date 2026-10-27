@@ -14,6 +14,7 @@ address,replacement,system
 0x014733a0,bb_render_emit_record_register_c,render
 0x01473400,bb_render_emit_record_register_b,render
 0x01473fe0,bb_render_emit_record_pipeline_mode,render
+0x014741b0,bb_render_emit_present_record_step,render
 0x01475370,bb_render_emit_record_enable,render
 0x01475da0,bb_render_begin_record_commands,render
 0x01485390,bb_render_set_record_register_range,render
