@@ -9,6 +9,7 @@ address,size,name,system,status,notes
 0x0143e490,174,frame_timing_task_flush_queue_0143e490,frame_timing,verified,"task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock"
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
+0x01475000,397,render_emit_shader_link_words,render,replaced,Static source; 32-entry bounded reverse-copy ladder; header for all counts; wrapping request and captured cursor publish. Unvalidated; validation deferred.
 0x014753c0,86,render_bind_optional_shader_commands,render,replaced,Static source; 40-word room/AL callback; NULL forwarded; native low32 gate and live cursor ADD. Unvalidated; validation deferred.
 0x01475480,98,render_bind_primary_shader_commands,render,replaced,Static source; 29-word room/AL callback; native low32 success gate; live cursor ADD; native writer retained. Unvalidated; validation deferred.
 0x01476030,140,render_select_shader_command_mode,render,replaced,Static original-byte reconstruction; Request room before five-selector admission; AL callback gate; captured cursor publish. Unvalidated; builds/tests/VM deferred.
