@@ -12,6 +12,7 @@ address,size,name,system,status,notes
 0x01471a40,73,render_read_record_descriptor_component,render,replaced,Read one encoding DWORD and extract one of four3-bit components; invalid selector returns2 without input access. Unvalidated progress.
 0x01487ee0,1090,render_initialize_pair_record_descriptor,render,replaced,"1091B FDE includes final NOP. Preserve32B clear, float-rounded count admission, distinct byte flag tests and packed64 return. Unvalidated progress."
 0x01488370,17,render_record_descriptor_set_high_field,render,replaced,Store top nibble of descriptor word0c; return masked old low28 bits. Unvalidated progress.
+0x01488590,969,render_initialize_triple_record_descriptor,render,replaced,"970B FDE includes final NOP. Preserve ordered32B clear, delegated flags, partial writes and packed64 return. Unvalidated progress."
 0x0149c4e0,114,render_initialize_record_geometry_flags,render,replaced,164B FDE/114B code and12-way table. Clear output before selector admission; exact1 flag gate. Unvalidated progress.
 0x014a27c0,627,render_get_record_descriptor_size,render,replaced,628B FDE. Initialize mandatory outputs after ignored decoder status; retain alias-visible live accumulation and partial errors. Unvalidated progress.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
