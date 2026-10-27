@@ -31,3 +31,4 @@ address,replacement,system
 0x02483e80,bb_kernel_condition_wait,kernel
 0x025b2fb0,bb_render_swap_chain_present,render
 0x02aaa5a0,bb_render_release_present_finish_node,render
+0x02ad3c80,bb_render_process_present_finish_item,render
