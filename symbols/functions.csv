@@ -14,6 +14,7 @@ address,size,name,system,status,notes
 0x01476240,172,render_emit_shader_descriptor32,render,replaced,Static source; Twelve-word descriptor; upper QWORD copies before lower pair; intermediate cursor and live final add. Unvalidated; validation deferred.
 0x014762f0,156,render_emit_shader_sampler16,render,replaced,Static source; Eight-word sampler descriptor; original stage table read; source overlap order and live cursor add. Unvalidated; validation deferred.
 0x01476390,133,render_emit_shader_address,render,replaced,Static source; Address value split into ordered DWORDs; AL callback gate; live cursor add; NULL is encoded. Unvalidated; validation deferred.
+0x01476420,126,render_emit_shader_word,render,replaced,Static source; Three-word scalar shader packet; stage table and flags; captured cursor publish. Unvalidated; validation deferred.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
