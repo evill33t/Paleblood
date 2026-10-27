@@ -8,6 +8,7 @@ address,replacement,system
 0x0143e490,bb_frame_timing_task_flush_queue_0143e490,frame_timing
 0x0143f9f0,bb_frame_timing_task_set_frame_value_0143f9f0,frame_timing
 0x014400a0,bb_frame_timing_task_workers_step_014400a0,frame_timing
+0x014738b0,bb_render_emit_prepared_record_packet,render
 0x016efd00,bb_event_emk_add,event
 0x017cfcc0,bb_event_flag_write,event
 0x01972900,bb_input_pad_step_01972900,input
