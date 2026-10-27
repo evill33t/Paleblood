@@ -4,7 +4,8 @@
 #include "present_command_configuration.h"
 #include "../engine/scalar.h"
 
-extern "C" [[noreturn]] void rt_fatal(const char *function, const char *message);
+#include <cstdio>
+#include <cstdlib>
 
 extern "C" void bb_render_configure_record_parameters(render::RecordCommandBuffer *commands,
                                                        uint32_t x, uint32_t y, uint32_t end_x,
@@ -87,7 +88,8 @@ extern "C" void bb_render_configure_record_parameters(render::RecordCommandBuffe
         fail_record_configuration_guard();
         // The original FDE closes after the call and one NOP. A returning failure
         // import has no recovered continuation; do not invent a successful return.
-        rt_fatal("render_configure_record_parameters (0x01496f60)",
-                 "__stack_chk_fail returned; native fallthrough is unclosed");
+        std::fputs("render_configure_record_parameters: __stack_chk_fail returned; "
+                   "native fallthrough is unclosed\n", stderr);
+        std::abort();
     }
 }
