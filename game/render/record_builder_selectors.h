@@ -16,4 +16,8 @@ RT_GLOBAL(0x04c6ff14, record_builder_scale_values, RecordBuilderSelectorValues);
 RT_ORIGINAL(0x02ab7a20, choose_record_constructor_selector,
             uint32_t(uint32_t selector, uint32_t flag));
 
+// The native one-byte RET stays unhooked. This inline form is only for observed
+// builder calls that discard the ambient return; it does not promise preservation
+// of full incoming RAX or the other machine-register details of that native entry.
+inline void record_builder_error_noop(uint32_t) {}
 }  // namespace render
