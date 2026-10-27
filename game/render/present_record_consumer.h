@@ -8,6 +8,7 @@
 
 #include "runtime/original.h"
 #include "present_preparation_inline.h"
+#include "present_register_packets.h"
 #include "initialize_record_register_c.h"
 #include "initialize_record_register_b.h"
 #include "initialize_record_register_a.h"
@@ -113,13 +114,6 @@ RT_ORIGINAL(0x01496f60, configure_record_parameters,
 RT_ORIGINAL(0x014868f0, record_option_value, uint32_t(PresentRecordView *));
 RT_ORIGINAL(0x01477150, configure_record_option,
             void(RecordCommandBuffer *, uint32_t enabled, uint32_t zero));
-RT_ORIGINAL(0x01473090, emit_record_register_a,
-            void(RecordCommandBuffer *, uint32_t slot, uint32_t value));
-RT_ORIGINAL(0x01472fd0, emit_record_mask, void(RecordCommandBuffer *, uint32_t mask));
-RT_ORIGINAL(0x014733a0, emit_record_register_c, void(RecordCommandBuffer *, uint32_t value));
-RT_ORIGINAL(0x01473400, emit_record_register_b, void(RecordCommandBuffer *, uint32_t value));
-RT_ORIGINAL(0x01473320, emit_record_state_mode,
-            void(RecordCommandBuffer *, uint32_t mode, uint32_t value));
 RT_ORIGINAL(0x02ace1e0, configure_record_shader,
             void(RecordShaderState *, RecordCommandBuffer *, SharedPresentDescriptor *,
                  SharedPresentDescriptor *optional_descriptor));
