@@ -14,6 +14,7 @@ address,size,name,system,status,notes
 0x01489910,24,render_record_descriptor_level_count,render,replaced,Read bits16..19 only below the upper descriptor partition; otherwise zero. Unvalidated progress.
 0x01489940,24,render_record_descriptor_count_exponent,render,replaced,Read bits16..19 only in the upper descriptor partition; otherwise zero. Unvalidated progress.
 0x01489960,68,render_record_descriptor_encoding,render,replaced,Snapshot packed words04 then0c; forward six extracted fields to the encoding packer. Unvalidated progress.
+0x0149cc60,350,render_convert_record_descriptor_classification,render,replaced,420B FDE/351B code; catalog cuts final JMP. One DWORD on success; preserve matching-class bypass and error output. Unvalidated progress.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
