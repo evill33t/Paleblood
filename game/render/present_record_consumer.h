@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "runtime/original.h"
+#include "present_preparation_inline.h"
 
 namespace render {
 struct RecordCommandBuffer { uint8_t unknown_0x00; };
@@ -127,8 +128,6 @@ RT_ORIGINAL(0x01473320, emit_record_state_mode,
 RT_ORIGINAL(0x02ace1e0, configure_record_shader,
             void(RecordShaderState *, RecordCommandBuffer *, SharedPresentDescriptor *,
                  SharedPresentDescriptor *optional_descriptor));
-RT_ORIGINAL(0x02ad1e10, bind_prepared_record,
-            void(RecordPreparationState *, RecordCommandBuffer *, uint32_t slot, PresentRecordView *));
 RT_ORIGINAL(0x01473fe0, emit_record_pipeline_mode, void(RecordCommandBuffer *, uint32_t mode));
 RT_ORIGINAL(0x01475370, emit_record_enable, void(RecordCommandBuffer *, uint32_t enabled));
 RT_ORIGINAL(0x02ace5e0, configure_record_shader_secondary,
