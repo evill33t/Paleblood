@@ -37,4 +37,10 @@ inline uint32_t record_descriptor_high_field(const RecordDescriptorPrefix *recor
     constexpr unsigned high_shift = 28;
     return record->pair_08.high.get() >> high_shift;
 }
+inline uint32_t record_descriptor_base_field(const RecordDescriptorPrefix *record)
+{
+    constexpr unsigned base_shift = 13;
+    constexpr uint32_t base_mask = 0x3fff;
+    return (record->pair_10.low.get() >> base_shift) & base_mask;
+}
 }  // namespace render
