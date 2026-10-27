@@ -43,4 +43,9 @@ inline uint32_t record_descriptor_base_field(const RecordDescriptorPrefix *recor
     constexpr uint32_t base_mask = 0x3fff;
     return (record->pair_10.low.get() >> base_shift) & base_mask;
 }
+inline uint32_t record_descriptor_first_field(const RecordDescriptorPrefix *record)
+{
+    constexpr uint32_t first_mask = 0x3fff;
+    return record->pair_08.low.get() & first_mask;
+}
 }  // namespace render
