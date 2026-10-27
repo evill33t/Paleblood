@@ -12,4 +12,10 @@ inline void bind_prepared_record(RecordPreparationState *, RecordCommandBuffer *
 {
     emit_prepared_record_packet(commands, slot, record);
 }
+// The11-byte entry forwards the entire incoming third argument; it is not a DWORD slot.
+inline void select_record_preparation(RecordPreparationState *, RecordCommandBuffer *commands,
+                                      uintptr_t descriptor)
+{
+    emit_prepared_selector_packet(commands, reinterpret_cast<const void *>(descriptor));
+}
 }  // namespace render
