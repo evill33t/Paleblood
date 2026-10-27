@@ -59,4 +59,10 @@ inline uint32_t record_descriptor_third_field(const RecordDescriptorPrefix *reco
     constexpr uint32_t third_mask = 0x1fff;
     return record->pair_10.low.get() & third_mask;
 }
+inline uint32_t record_descriptor_classification(const RecordDescriptorPrefix *record)
+{
+    constexpr unsigned classification_shift = 20;
+    constexpr uint32_t classification_mask = 31;
+    return (record->pair_08.high.get() >> classification_shift) & classification_mask;
+}
 }  // namespace render
