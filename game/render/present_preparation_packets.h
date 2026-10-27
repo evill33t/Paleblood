@@ -20,7 +20,6 @@ RT_ORIGINAL(0x014739b0, emit_prepared_selector_packet,
             void(RecordCommandBuffer *, const void *descriptor));
 
 // Short getter boundaries consume a borrowed pointer and return its full DWORD value.
-RT_ORIGINAL(0x01472790, prepared_selector_second_word, uint32_t(const void *));
 
 template <typename T> struct PreparationField {
     uint8_t bytes[sizeof(T)];
@@ -85,6 +84,13 @@ struct PreparationSelectorPredicateSource {
 static_assert(offsetof(PreparationSelectorPredicateSource, first) == 0x08);
 static_assert(offsetof(PreparationSelectorPredicateSource, second) == 0x0c);
 static_assert(sizeof(PreparationSelectorPredicateSource) == 0x10);
+
+// Native4-byte entry remains unhooked. Preserve the DWORD load, including noncanonical
+// predicate values; byte-backed fields permit the original unaligned read.
+inline uint32_t prepared_selector_second_word(const void *descriptor)
+{
+    return static_cast<const PreparationSelectorPredicateSource *>(descriptor)->second.get();
+}
 
 // Native4-byte entry remains unhooked. Preserve the DWORD load, including noncanonical
 // predicate values; byte-backed fields permit the original unaligned read.
