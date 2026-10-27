@@ -33,3 +33,4 @@ address,size,name,system,status,notes
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02ab7a20,66,render_choose_record_constructor_selector,render,replaced,100B FDE includes dispatch table/padding. Preserve exact selector mapping and low-byte flag gate. Unvalidated progress.
 0x02ab7ab0,124,render_combine_record_parameters,render,replaced,156B FDE includes dispatch table. Low-byte flag selects guarded full-DWORD variants; original scalar table retained. Unvalidated progress.
+0x02ab7e40,22,render_reduce_record_parameter,render,replaced,Guard index0..3 before reading original scale table; invalid unsigned values return0. Unvalidated progress.

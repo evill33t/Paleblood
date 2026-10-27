@@ -32,3 +32,4 @@ address,replacement,system
 0x025b2fb0,bb_render_swap_chain_present,render
 0x02ab7a20,bb_render_choose_record_constructor_selector,render
 0x02ab7ab0,bb_render_combine_record_parameters,render
+0x02ab7e40,bb_render_reduce_record_parameter,render
