@@ -65,4 +65,10 @@ inline uint32_t record_descriptor_classification(const RecordDescriptorPrefix *r
     constexpr uint32_t classification_mask = 31;
     return (record->pair_08.high.get() >> classification_shift) & classification_mask;
 }
+inline uint8_t record_descriptor_rounding_flag(const RecordDescriptorPrefix *record)
+{
+    constexpr unsigned high_byte = 3, flag_shift = 1;
+    constexpr uint8_t flag_mask = 2;
+    return static_cast<uint8_t>((record->pair_08.high.bytes[high_byte] & flag_mask) >> flag_shift);
+}
 }  // namespace render
