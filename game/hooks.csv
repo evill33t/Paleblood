@@ -10,6 +10,7 @@ address,replacement,system
 0x014400a0,bb_frame_timing_task_workers_step_014400a0,frame_timing
 0x014712d0,bb_render_compose_record_encoding_fields,render
 0x01471770,bb_render_record_encoding_byte_flags,render
+0x01489910,bb_render_record_descriptor_level_count,render
 0x016efd00,bb_event_emk_add,event
 0x017cfcc0,bb_event_flag_write,event
 0x01972900,bb_input_pad_step_01972900,input
