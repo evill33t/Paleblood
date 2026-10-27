@@ -13,6 +13,7 @@ address,replacement,system
 0x01473320,bb_render_emit_record_state_mode,render
 0x014733a0,bb_render_emit_record_register_c,render
 0x01473400,bb_render_emit_record_register_b,render
+0x01473fe0,bb_render_emit_record_pipeline_mode,render
 0x01475da0,bb_render_begin_record_commands,render
 0x01485390,bb_render_set_record_register_range,render
 0x014853f0,bb_render_set_record_register_enabled,render
