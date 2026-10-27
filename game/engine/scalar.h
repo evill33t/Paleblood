@@ -23,6 +23,12 @@ __attribute__((target("sse4.1"))) inline float round_up(float x)
     return _mm_cvtss_f32(_mm_round_ss(_mm_set_ss(x), _mm_set_ss(x), _MM_FROUND_TO_POS_INF));
 }
 
+// Rounds down (roundss toward -infinity), retaining the instruction's exception reporting.
+__attribute__((target("sse4.1"))) inline float round_down(float x)
+{
+    return _mm_cvtss_f32(_mm_round_ss(_mm_set_ss(x), _mm_set_ss(x), _MM_FROUND_TO_NEG_INF));
+}
+
 // maxss: a if a > b, else b (so b when either is NaN).
 inline float max_of(float a, float b) { return _mm_cvtss_f32(_mm_max_ss(_mm_set_ss(a), _mm_set_ss(b))); }
 
@@ -35,6 +41,12 @@ inline int32_t truncate(float x) { return _mm_cvttss_si32(_mm_set_ss(x)); }
 
 // divss: a / b, with b read from memory as the original does (no folding of a known divisor).
 inline float divide(float a, const float &b) { return _mm_cvtss_f32(_mm_div_ss(_mm_set_ss(a), _mm_load_ss(&b))); }
+
+// cvtsi2ss on signed32 input, with conversion rounding controlled by current MXCSR.
+inline float signed32_to_float(int32_t x)
+{
+    return _mm_cvtss_f32(_mm_cvtsi32_ss(_mm_setzero_ps(), x));
+}
 
 // vcvtsi2ss on an unsigned 64-bit value, as compilers emit it: values with the top bit set are
 // halved (keeping the low bit, so the rounding is the same), converted, and doubled.
