@@ -8,6 +8,7 @@
 
 #include "runtime/original.h"
 #include "present_preparation_inline.h"
+#include "initialize_record_register_b.h"
 #include "initialize_record_register_a.h"
 
 namespace render {
@@ -111,7 +112,6 @@ RT_ORIGINAL(0x01496f60, configure_record_parameters,
 RT_ORIGINAL(0x014868f0, record_option_value, uint32_t(PresentRecordView *));
 RT_ORIGINAL(0x01477150, configure_record_option,
             void(RecordCommandBuffer *, uint32_t enabled, uint32_t zero));
-RT_ORIGINAL(0x014854b0, initialize_record_register_b, void(RecordRegisterState *));
 RT_ORIGINAL(0x01485380, initialize_record_register_c, void(RecordRegisterState *));
 RT_ORIGINAL(0x01473090, emit_record_register_a,
             void(RecordCommandBuffer *, uint32_t slot, uint32_t value));
