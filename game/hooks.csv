@@ -13,6 +13,7 @@ address,replacement,system
 0x01473750,bb_render_configure_record_final_pair,render
 0x014765e0,bb_render_configure_record_transform,render
 0x01476790,bb_render_configure_record_extent,render
+0x01485220,bb_render_set_record_configuration_register,render
 0x016efd00,bb_event_emk_add,event
 0x017cfcc0,bb_event_flag_write,event
 0x01972900,bb_input_pad_step_01972900,input
