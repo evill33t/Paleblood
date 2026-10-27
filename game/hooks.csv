@@ -34,3 +34,4 @@ address,replacement,system
 0x025b2fb0,bb_render_swap_chain_present,render
 0x02acfc20,bb_render_finish_record_shader,render
 0x02ad1e30,bb_render_clear_prepared_record,render
+0x02ad1e70,bb_render_finish_record_preparation,render
