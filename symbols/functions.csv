@@ -32,4 +32,5 @@ address,size,name,system,status,notes
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02aaa5a0,124,render_release_present_finish_node,render,replaced,"Uncompiled/unvalidated progress: live head retry and node packet call; forwards terminal RAX; outgoing stack low DWORDs established, upper padding/lower effects open."
+0x02ab0b00,326,render_submit_present_finish_snapshot,render,replaced,"Uncompiled/unvalidated progress: counter waits and ordered nonempty regions; low-DWORD cursor lengths, partial empty snapshot, captured guard; logical void/lower effects open."
 0x02ad3c80,42,render_process_present_finish_item,render,replaced,Uncompiled/unvalidated progress: wrapped full-width item trailer store and six-register terminal call; forwards RAX; lower effects and physical tail-frame identity open.
