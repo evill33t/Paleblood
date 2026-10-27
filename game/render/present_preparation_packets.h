@@ -19,8 +19,7 @@ RT_ORIGINAL(0x014738b0, emit_prepared_record_packet,
 RT_ORIGINAL(0x014739b0, emit_prepared_selector_packet,
             void(RecordCommandBuffer *, const void *descriptor));
 
-// Only the pointer argument and EAX test are required at these original call sites.
-RT_ORIGINAL(0x01486ca0, prepared_record_payload_word, uint32_t(const void *));
+// Short getter boundaries consume a borrowed pointer and return its full DWORD value.
 RT_ORIGINAL(0x01472770, prepared_selector_first_word, uint32_t(const void *));
 RT_ORIGINAL(0x01472790, prepared_selector_second_word, uint32_t(const void *));
 
@@ -71,6 +70,13 @@ struct PreparationRecordPredicateSource {
 };
 static_assert(offsetof(PreparationRecordPredicateSource, word) == 0x00);
 static_assert(sizeof(PreparationRecordPredicateSource) == 0x04);
+
+// Native3-byte entry remains unhooked. Preserve the DWORD load, including noncanonical
+// predicate values; byte-backed fields permit the original unaligned read.
+inline uint32_t prepared_record_payload_word(const void *descriptor)
+{
+    return static_cast<const PreparationRecordPredicateSource *>(descriptor)->word.get();
+}
 
 struct PreparationSelectorPredicateSource {
     uint8_t unknown_0x00[0x08];
