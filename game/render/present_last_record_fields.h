@@ -12,4 +12,10 @@ struct LastRecordIndexFields {
 };
 static_assert(offsetof(LastRecordIndexFields, indices_20) == 0x20);
 static_assert(sizeof(LastRecordIndexFields) == 0x24);
+
+struct LastRecordModeWord {
+    PresentFinishField<uint32_t> word;
+};
+static_assert(offsetof(LastRecordModeWord, word) == 0);
+static_assert(sizeof(LastRecordModeWord) == 0x4);
 }  // namespace render
