@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Preserve ordered packed-word publications and repeated original getters.
+// Preserve ordered packed-word publications and repeated exact-width reads.
 // Input/output overlap can change later reads; no source snapshot is taken.
 #include "constructor_descriptor_conversion.h"
 
