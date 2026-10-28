@@ -15,14 +15,14 @@ template <typename T> struct ConstructorConversionField {
     T get() const { T value; std::memcpy(&value, bytes, sizeof(value)); return value; }
     void set(T value) { std::memcpy(bytes, &value, sizeof(value)); }
 };
-// Only the prefix read by the inline getters is described here. The remaining
-// original mapping helper can require a larger backing object.
+// This prefix bounds the nine getters' known source reads. The unused hole
+// and the full backing record's size, ownership and physical meaning stay unknown.
 struct ConstructorRecordSource {
     ConstructorConversionField<uint32_t> word00;
     ConstructorConversionField<uint32_t> word04;
     uint8_t unknown_0x08[4];
     ConstructorConversionField<uint32_t> word0c;
-    uint8_t unknown_0x10[4];
+    ConstructorConversionField<uint32_t> mapping_word_10;
     ConstructorConversionField<uint32_t> word14;
     ConstructorConversionField<uint16_t> first_18;
     ConstructorConversionField<uint16_t> second_1a;
@@ -30,6 +30,7 @@ struct ConstructorRecordSource {
 static_assert(offsetof(ConstructorRecordSource, word00) == 0);
 static_assert(offsetof(ConstructorRecordSource, word04) == 4);
 static_assert(offsetof(ConstructorRecordSource, word0c) == 0x0c);
+static_assert(offsetof(ConstructorRecordSource, mapping_word_10) == 0x10);
 static_assert(offsetof(ConstructorRecordSource, word14) == 0x14);
 static_assert(offsetof(ConstructorRecordSource, first_18) == 0x18);
 static_assert(offsetof(ConstructorRecordSource, second_1a) == 0x1a);
@@ -115,10 +116,10 @@ inline uint32_t source_signed_parameter(const ConstructorRecordSource *source)
     constexpr uint32_t field_mask = 3;
     return (source->word14.get() >> field_shift) & field_mask;
 }
-// This remaining mapping getter tail-calls an original encoder. Its full
-// callee-input and return contract remains unresolved; retain the observed
-// low32 consumer profile and original call instead of inventing a leaf body.
-RT_ORIGINAL(0x01486cf0, source_mapping_word, uint32_t(const ConstructorRecordSource *));
+// The mapping getter reads exactly one DWORD at +0x10, then tail-calls the
+// register-only encoder. Its full result is a zero-extended packed DWORD;
+// this consumer captures the low32 value after the original call.
+RT_ORIGINAL(0x01486cf0, source_mapping_word, uint64_t(const ConstructorRecordSource *));
 // Existing73-byte original: read one DWORD and select component0..3. Keep the
 // original call and shared local address; no lower implementation is copied.
 RT_ORIGINAL(0x01471a40, read_record_descriptor_component, uint32_t(const uint32_t *, uint32_t));
@@ -127,8 +128,8 @@ RT_GLOBAL(0x057e3be0, guard_pointer, const uint64_t *);
 }  // namespace constructor_conversion_calls
 }  // namespace render
 
-// Normal return is the full current guard QWORD, not a numeric status. Direct
-// inputs are three GP values; extra ambient/lower arity, complete physical frame
-// and a returning guard-failure continuation are explicitly unclaimed.
+// The normal path consumes these three GP inputs and returns the freshly read
+// full guard QWORD. Complete physical-frame equivalence and a returning
+// guard-failure continuation remain explicitly unclaimed.
 extern "C" uint64_t bb_render_convert_constructor_record(
     render::ConstructorDescriptorOutput *, const render::ConstructorRecordSource *, uint32_t);

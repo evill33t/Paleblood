@@ -113,7 +113,8 @@ extern "C" uint64_t bb_render_convert_constructor_record(
     output->words_08_0c.high.set(output->words_08_0c.high.get() & word0c_clear_middle);
     output->words_00_04.high.set(output->words_00_04.high.get() & word04_clear_middle);
 
-    const uint32_t mapping = constructor_conversion_calls::source_mapping_word(source);
+    const uint32_t mapping = static_cast<uint32_t>(
+        constructor_conversion_calls::source_mapping_word(source));
     frame.mapping_word.set(mapping);
     const uint32_t previous04_outer = output->words_00_04.high.get() & word04_keep_outer;
     const uint32_t upper_group = (mapping << word04_upper_group_shift) & word04_upper_group_mask;
