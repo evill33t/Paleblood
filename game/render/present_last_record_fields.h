@@ -33,4 +33,19 @@ inline uint32_t read_present_last_record_option_source(const LastRecordOptionWor
     constexpr uint32_t option_mask = 0x3;
     return (record->word.get() >> option_shift) & option_mask;
 }
+
+struct LastRecordClassByte {
+    uint8_t unknown_0x00[0x3];
+    PresentFinishField<uint8_t> flags_03;
+};
+static_assert(offsetof(LastRecordClassByte, flags_03) == 0x3);
+static_assert(sizeof(LastRecordClassByte) == 0x4);
+
+// This source form supplies the observed AL result only. The nine-byte native
+// entry preserves incoming upper RAX bits and remains unhooked.
+inline uint8_t read_present_last_record_class_source(const LastRecordClassByte *record)
+{
+    constexpr uint8_t class_shift = 5;
+    return uint8_t((record->flags_03.get() >> class_shift) & 1);
+}
 }  // namespace render
