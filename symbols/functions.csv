@@ -11,6 +11,7 @@ address,size,name,system,status,notes
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
 0x014721d0,31,render_set_present_last_record_indices,render,replaced,Pack two 11-bit indices; preserve old masked bits as full RAX. Static source only; uncompiled/unvalidated.
+0x014769e0,93,render_emit_present_last_record_packet,render,replaced,Emit 3 DWORDs with capacity callback and opaque failure RAX; full cursor return. Static source only; uncompiled/unvalidated.
 0x01485070,16,render_set_present_last_record_mode_6,render,replaced,Replace mode bit6 from low input bit; return old masked DWORD zeroextended. Static source only; uncompiled/unvalidated.
 0x01485080,16,render_set_present_last_record_mode_5,render,replaced,Replace mode bit5 from low input bit; return old masked DWORD zeroextended. Static source only; uncompiled/unvalidated.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
