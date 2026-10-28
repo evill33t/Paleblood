@@ -50,7 +50,7 @@ struct alignas(16) SetupFrame {
     SetupFrameWord mapped_or_tiled;
     SetupFrameWord second_or_stride;
     SetupFrameSlot first_or_storage;
-    SetupFrameSlot parameter_or_status;
+    SetupFrameSlot resource_output_or_status;
     PresentFinishField<SetupServices *> services;
     PresentFinishField<SetupState *> state;
     SetupTemporaryAllocator temporary;
@@ -72,7 +72,7 @@ static_assert(offsetof(SetupFrame, manager) == 0x30);
 static_assert(offsetof(SetupFrame, mapped_or_tiled) == 0x38);
 static_assert(offsetof(SetupFrame, second_or_stride) == 0x3c);
 static_assert(offsetof(SetupFrame, first_or_storage) == 0x40);
-static_assert(offsetof(SetupFrame, parameter_or_status) == 0x48);
+static_assert(offsetof(SetupFrame, resource_output_or_status) == 0x48);
 static_assert(offsetof(SetupFrame, services) == 0x50);
 static_assert(offsetof(SetupFrame, state) == 0x58);
 static_assert(offsetof(SetupFrame, temporary) == 0x60);
@@ -207,7 +207,8 @@ uint64_t cleanup_video_setup(SetupState *state, SetupFrame &frame,
 extern "C" __attribute__((visibility("hidden"), noinline, used))
 uint64_t bb_render_setup_swap_chain_body(
     render::SetupState *initial_state, render::SetupObjectSlot *output,
-    uintptr_t parameter, render::SetupServices *services, render::SetupInfo *info,
+    render::SetupResourceSlot *resource_output, render::SetupServices *services,
+    render::SetupInfo *info,
     render::SetupOwner *manager, const render::SetupOwnerSlot *live_allocator_slot)
 {
     using namespace render;
@@ -217,7 +218,7 @@ uint64_t bb_render_setup_swap_chain_body(
     if (info->selector_10.get() != admitted_selector) {
         return checked_status(initial_guard_pointer, frame, unsupported_setup);
     }
-    frame.parameter_or_status.set_u64(parameter);
+    frame.resource_output_or_status.set_u64(reinterpret_cast<uintptr_t>(resource_output));
     frame.state.set(initial_state);
     frame.services.set(services);
     SetupObject *const object = swap_setup_calls::create_object(1, 1, manager, services, info, manager);
@@ -407,17 +408,18 @@ uint64_t bb_render_setup_swap_chain_body(
     parameters->words[11].set(0);
     frame.outgoing.slots[0].set_u64(0);
     SetupServices *const cached_services = frame.services.get();
-    const uintptr_t cached_parameter = uintptr_t(frame.parameter_or_status.get_u64());
+    SetupResourceSlot *const cached_output = reinterpret_cast<SetupResourceSlot *>(
+        uintptr_t(frame.resource_output_or_status.get_u64()));
     SetupOwner *const cached_manager = frame.manager.get();
     SetupOwner *const init_allocator = live_allocator_slot->value.get();
     const uint32_t cached_status = swap_setup_calls::initialize_cached_record(
-        cached_services, cached_parameter, parameters, 0, cached_manager, init_allocator,
+        cached_services, cached_output, parameters, nullptr, cached_manager, init_allocator,
         frame.outgoing.slots[0].get_u64());
     if (cached_status != 0) {
         // This failure deliberately has no generalized rollback.
         return checked_status(video_guard_pointer, frame, cached_status);
     }
-    frame.parameter_or_status.set_u32(construction_failed);
+    frame.resource_output_or_status.set_u32(construction_failed);
     SetupCachedRecord &cached = state->cached_record;
     cached.zero_00.set(0);
     cached.storage_08.set(state->storage_2d0.get());
@@ -449,7 +451,7 @@ uint64_t bb_render_setup_swap_chain_body(
     }
     bool failed = false;
     if (upload == 0) {
-        frame.parameter_or_status.set_u32(allocation_failed);
+        frame.resource_output_or_status.set_u32(allocation_failed);
         failed = true;
     } else {
         const uintptr_t second_plane = upload + curve_plane_bytes;
@@ -481,12 +483,12 @@ uint64_t bb_render_setup_swap_chain_body(
             &state->curve, curve_service, swap_setup_calls::curve_settings.address(), channels,
             cached_manager, live_allocator_slot->value.get(), frame.outgoing.slots[0].get_u64());
         failed = curve_status != 0;
-        if (failed) frame.parameter_or_status.set_u32(curve_status);
+        if (failed) frame.resource_output_or_status.set_u32(curve_status);
         if (fallback_owner != nullptr) release_owned(fallback_owner, upload);
     }
     frame.temporary.vtable.set(temporary_vtable);
     swap_setup_calls::release_upload_token(frame.temporary.token.get());
-    const uint32_t saved_final_status = frame.parameter_or_status.get_u32();
+    const uint32_t saved_final_status = frame.resource_output_or_status.get_u32();
     const uint32_t final_status = failed ? saved_final_status : 0;
     return checked_status(present_finish_guard_pointer.get(), frame, final_status);
 }
@@ -494,7 +496,7 @@ uint64_t bb_render_setup_swap_chain_body(
 #if defined(__x86_64__)
 extern "C" __attribute__((naked, no_stack_protector))
 uint64_t bb_render_setup_swap_chain(
-    render::SetupState *, render::SetupObjectSlot *, uintptr_t,
+    render::SetupState *, render::SetupObjectSlot *, render::SetupResourceSlot *,
     render::SetupServices *, render::SetupInfo *, render::SetupOwner *, render::SetupOwner *)
 {
     // One live outgoing pointer argument: original entry RSP is8mod16, subtract8
@@ -513,7 +515,7 @@ uint64_t bb_render_setup_swap_chain(
 }
 #else
 extern "C" uint64_t bb_render_setup_swap_chain(
-    render::SetupState *, render::SetupObjectSlot *, uintptr_t,
+    render::SetupState *, render::SetupObjectSlot *, render::SetupResourceSlot *,
     render::SetupServices *, render::SetupInfo *, render::SetupOwner *, render::SetupOwner *)
 {
     std::fputs("render swap-chain setup: native entry requires AMD64 System V; "

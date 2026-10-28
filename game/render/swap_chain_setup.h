@@ -8,6 +8,7 @@
 namespace render {
 struct SetupObject;
 struct SetupServices;
+struct SetupResourceSlot;
 struct SetupOwner;
 using SetupAllocate = uintptr_t (*)(SetupOwner *, uint64_t);
 // Allocation+58 also has provable inherited RDX/RCX values at this call site.
@@ -179,8 +180,10 @@ RT_ORIGINAL(0x02fbf5b8, delete_event_queue, void(uint64_t));
 RT_ORIGINAL(0x02fbf5c8, video_close, void(int32_t));
 RT_ORIGINAL(0x02fbf5d8, register_video_buffers,
             int32_t(int32_t, uint32_t, const void *, uint32_t, SetupVideoAttribute *));
+// RSI is a borrowed output-QWORD slot; RCX is a full optional array pointer.
+// This setup call supplies nullptr for the optional array.
 RT_ORIGINAL(0x02565f90, initialize_cached_record,
-            uint32_t(SetupServices *, uintptr_t, SetupParameters *, uint32_t,
+            uint32_t(SetupServices *, SetupResourceSlot *, SetupParameters *, void *,
                      SetupOwner *, SetupOwner *, uint64_t));
 RT_ORIGINAL(0x02abaef0, current_storage_mode, uint32_t());
 RT_ORIGINAL(0x0247d5b0, capture_upload_token, uintptr_t());
