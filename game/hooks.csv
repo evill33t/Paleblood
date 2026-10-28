@@ -31,4 +31,5 @@ address,replacement,system
 0x024512a0,bb_frame_timing_task_frame_024512a0,frame_timing
 0x02483e80,bb_kernel_condition_wait,kernel
 0x02571c60,bb_render_clear_swap_chain_curve,render
+0x02572290,bb_render_clear_swap_chain_cached_record,render
 0x025b2fb0,bb_render_swap_chain_present,render
