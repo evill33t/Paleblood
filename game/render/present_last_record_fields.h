@@ -48,4 +48,11 @@ inline uint8_t read_present_last_record_class_source(const LastRecordClassByte *
     constexpr uint8_t class_shift = 5;
     return uint8_t((record->flags_03.get() >> class_shift) & 1);
 }
+
+// Source profile for callers that discard RAX. The seven-byte native entry
+// leaves RAX unchanged and remains unhooked; only its DWORD store is modeled.
+inline void initialize_present_last_record_mode_source(LastRecordModeWord *mode)
+{
+    mode->word.set(0);
+}
 }  // namespace render
