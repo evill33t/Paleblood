@@ -34,3 +34,4 @@ address,size,name,system,status,notes
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02abb6d0,48,render_emit_present_release_delegate,render,replaced,"Uncompiled/unvalidated: release argument shuffle with fixed flags/mode, full address/data/result and two low-DWORD stack args; upper padding/ambient state remain open."
+0x02ad3d40,35,render_capture_present_buffer_pool_record,render,replaced,Uncompiled/unvalidated: zero begin avoids pool reads; wrapped difference SAR3 then unsigned DIVQ remainder and record address; non-AMD64 zero-divisor fault bridge open.
