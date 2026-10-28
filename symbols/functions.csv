@@ -33,6 +33,7 @@ address,size,name,system,status,notes
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02abba10,22,render_reset_present_context_state_b518,render,replaced,Uncompiled/unvalidated: two ordered QWORD resets; preserves full RAX sentinel ffffffff00000000 and touches no other bytes.
+0x02acd190,601,render_reset_present_context_shader_state,render,replaced,"Uncompiled/unvalidated: conditional context-byte clear, original helper, six ordered bank resets plus three fills, exact gaps and opaque final import RAX."
 0x02ad2d20,517,render_reset_present_context_preparation,render,replaced,"Uncompiled/unvalidated: interleaved two-bank reset, live scalar load, exact partial stores/gaps, final low-two-bit preservation and full zero-extended RAX."
 0x02ad3070,351,render_prepare_present_context_scratch,render,replaced,"Uncompiled/unvalidated: live bank/snapshot scan, finite eight-way table, cached pre-call arguments and full selected-record or opaque tail RAX; FDE384/catalog351."
 0x02ad3300,76,render_reset_present_context_state_b528,render,replaced,"Uncompiled/unvalidated: ordered partial reset with one live scalar-bit load after initial stores, untouched padding and full packed-sentinel RAX."
