@@ -150,8 +150,10 @@ namespace resource_descriptor_calls {
 RT_ORIGINAL(0x025711d0, normalize,
             void(ResourceDescriptorNormalized *, const ResourceDescriptorParameters *,
                  const ResourceDescriptorOptional *, uint32_t, uintptr_t, uintptr_t));
-// At the first call full EAX survives a low-byte replacement into frame44.
-RT_ORIGINAL(0x02abb4f0, select_auxiliary, uint32_t(uint32_t, uint32_t));
+// The first native call enters with RAX=0x40, so every returned bit above
+// AL is zero; the later call reads only AL. Consume a byte here so compiler
+// scratch-register contents cannot enter the saved 32-bit predicate word.
+RT_ORIGINAL(0x02abb4f0, select_auxiliary, uint8_t(uint32_t, uint32_t));
 RT_ORIGINAL(0x02ab7a20, choose_constructor_parameter, uint32_t(uint32_t, uint32_t));
 RT_ORIGINAL(0x02ab7ab0, combine_parameters, uint32_t(uint32_t, uint32_t, uint32_t));
 RT_ORIGINAL(0x01485f90, construct_record,
