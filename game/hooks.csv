@@ -11,6 +11,7 @@ address,replacement,system
 0x014400a0,bb_frame_timing_task_workers_step_014400a0,frame_timing
 0x014721d0,bb_render_set_present_last_record_indices,render
 0x01485070,bb_render_set_present_last_record_mode_6,render
+0x01485080,bb_render_set_present_last_record_mode_5,render
 0x016efd00,bb_event_emk_add,event
 0x017cfcc0,bb_event_flag_write,event
 0x01972900,bb_input_pad_step_01972900,input
