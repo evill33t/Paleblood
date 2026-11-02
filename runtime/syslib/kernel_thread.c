@@ -74,10 +74,13 @@ static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
 void *rt_tls_block_create(void)
 {
     const uint64_t align = rt_process.tls_align > 16 ? rt_process.tls_align : 16;
-    const uint64_t size = (rt_process.tls_memsz + align - 1) / align * align;
     enum { CONTROL_BLOCK = 4096 };
-    unsigned char *block = aligned_alloc(align, size + CONTROL_BLOCK);
-    if (!block) return NULL;
+    if (align > SIZE_MAX || rt_process.tls_memsz > SIZE_MAX - (align - 1)) return NULL;
+    const uint64_t size = (rt_process.tls_memsz + align - 1) / align * align;
+    if (size > SIZE_MAX - CONTROL_BLOCK) return NULL;
+    void *allocation = NULL;
+    if (posix_memalign(&allocation, (size_t)align, (size_t)size + CONTROL_BLOCK)) return NULL;
+    unsigned char *block = allocation;
     memset(block, 0, size + CONTROL_BLOCK);
     unsigned char *tp = block + size;
     if (rt_process.tls_filesz) memcpy(tp - size, rt_process.tls_image, rt_process.tls_filesz);
