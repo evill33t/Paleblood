@@ -164,3 +164,9 @@ add_executable(test_direct_memory_faults test/test_direct_memory_faults.c $<TARG
 target_include_directories(test_direct_memory_faults PRIVATE runtime/include)
 add_test(NAME direct_memory_faults COMMAND test_direct_memory_faults)
 set_tests_properties(direct_memory_core direct_memory_faults PROPERTIES TIMEOUT 20)
+# Full-width module arguments and proven early invalid-ID statuses.
+add_executable(test_sysmodule_wire test/test_sysmodule_wire.c
+               runtime/syslib/table.c runtime/syslib/kernel_sysmodule.c)
+target_include_directories(test_sysmodule_wire PRIVATE runtime/include)
+add_test(NAME sysmodule_wire COMMAND test_sysmodule_wire)
+set_tests_properties(sysmodule_wire PROPERTIES TIMEOUT 10)
