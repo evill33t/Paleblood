@@ -68,13 +68,22 @@ static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
 
 static int mutex_create(guest_mutex **out, int type, int protocol)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    if (type == TYPE_ADAPTIVE)
+        rt_fatal("mutex", "Darwin adaptive mutex scheduling is unsupported");
+    if (protocol)
+        rt_fatal("mutex", "Darwin priority mutex protocols are unsupported");
+    const int adaptive_type = PTHREAD_MUTEX_NORMAL; /* Unreachable for TYPE_ADAPTIVE above. */
+#else
+    const int adaptive_type = PTHREAD_MUTEX_ADAPTIVE_NP;
+#endif
     guest_mutex *m = malloc(sizeof *m);
     if (!m) return BSD_ENOMEM;
     pthread_mutexattr_t a;
     pthread_mutexattr_init(&a);
     pthread_mutexattr_settype(&a, type == TYPE_RECURSIVE    ? PTHREAD_MUTEX_RECURSIVE
                                   : type == TYPE_ERRORCHECK ? PTHREAD_MUTEX_ERRORCHECK
-                                  : type == TYPE_ADAPTIVE   ? PTHREAD_MUTEX_ADAPTIVE_NP
+                                  : type == TYPE_ADAPTIVE   ? adaptive_type
                                                             : PTHREAD_MUTEX_NORMAL);
     if (protocol == 1) pthread_mutexattr_setprotocol(&a, PTHREAD_PRIO_INHERIT);
     else if (protocol == 2) pthread_mutexattr_setprotocol(&a, PTHREAD_PRIO_PROTECT);
@@ -218,7 +227,9 @@ static int cond_create(guest_cond **out)
     if (!c) return BSD_ENOMEM;
     pthread_condattr_t a;
     pthread_condattr_init(&a);
+#if !defined(__APPLE__) || !defined(__MACH__)
     pthread_condattr_setclock(&a, CLOCK_MONOTONIC); /* deadlines are computed on this clock */
+#endif
     const int r = pthread_cond_init(&c->host, &a);
     pthread_condattr_destroy(&a);
     if (r) {
@@ -289,6 +300,9 @@ static int cond_broadcast(guest_cond **cond)
    the runtime releases the others itself around it. */
 static int cond_wait(guest_cond **cond, guest_mutex **mutex, const struct timespec *deadline)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    if (deadline) rt_fatal("scePthreadCondTimedwait", "Darwin monotonic condition deadlines are unsupported");
+#endif
     guest_cond *c;
     int r = cond_get(cond, &c);
     if (r) return r;
