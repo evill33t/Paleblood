@@ -72,7 +72,7 @@ set_tests_properties(capture_poc_replay PROPERTIES
     ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
 # System library implementations, compiled in directly so the linker keeps every RT_SYSLIB entry
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
-add_executable(test_syslib test/test_syslib.c runtime/process.c runtime/module.c runtime/cpu.c ${PB_TEST_SYSLIB})
+add_executable(test_syslib test/test_syslib.c runtime/process.c runtime/module.c runtime/cpu.c runtime/host_time.c ${PB_TEST_SYSLIB})
 target_include_directories(test_syslib PRIVATE runtime/include)
 add_test(NAME syslib COMMAND test_syslib)
 add_executable(test_affinity test/test_affinity.c runtime/cpu.c runtime/process.c
@@ -174,3 +174,7 @@ set_tests_properties(sysmodule_wire PROPERTIES TIMEOUT 10)
 add_executable(test_host_file_stat test/test_host_file_stat.c runtime/process.c runtime/syslib/table.c)
 target_include_directories(test_host_file_stat PRIVATE runtime/include)
 add_test(NAME host_file_stat COMMAND test_host_file_stat)
+
+add_executable(test_host_time test/test_host_time.c runtime/host_time.c)
+target_include_directories(test_host_time PRIVATE runtime/include)
+add_test(NAME host_time COMMAND test_host_time)
