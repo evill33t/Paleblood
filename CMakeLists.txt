@@ -58,6 +58,16 @@ set_tests_properties(capture_poc_replay PROPERTIES
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
 add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB})
 target_include_directories(test_syslib PRIVATE runtime/include)
+# Keep the coefficient helper's scalar FP steps and real libm call sites intact
+# in both targets that compile the system-library sources.
+set_source_files_properties(
+    ${PROJECT_SOURCE_DIR}/runtime/syslib/video_out_coefficients.c
+    TARGET_DIRECTORY pbboot test_syslib
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off;-frounding-math;-fno-builtin-sinf;-fno-builtin-roundf")
+if(UNIX AND NOT APPLE)
+    target_link_libraries(pbboot PRIVATE m)
+    target_link_libraries(test_syslib PRIVATE m)
+endif()
 add_test(NAME syslib COMMAND test_syslib)
 
 add_test(NAME tools COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/test -p "test_*.py" -v)
