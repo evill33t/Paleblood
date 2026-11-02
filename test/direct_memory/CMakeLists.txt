@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+cmake_minimum_required(VERSION 3.20)
+project(paleblood_direct_memory_core C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+add_compile_options(-Wall -Wextra -Werror)
+enable_testing()
+get_filename_component(PB_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+add_library(pb_direct_memory STATIC ${PB_ROOT}/runtime/direct_memory.c)
+target_include_directories(pb_direct_memory PUBLIC ${PB_ROOT}/runtime/include)
+add_executable(test_direct_memory ${PB_ROOT}/test/test_direct_memory.c)
+target_link_libraries(test_direct_memory PRIVATE pb_direct_memory)
+add_test(NAME direct_memory_core COMMAND test_direct_memory)
+# Link one production core object with test-only host-boundary aliases.
+add_library(pb_direct_memory_faults OBJECT ${PB_ROOT}/runtime/direct_memory.c)
+target_include_directories(pb_direct_memory_faults PRIVATE ${PB_ROOT}/runtime/include)
+target_compile_definitions(pb_direct_memory_faults PRIVATE calloc=rt_test_calloc tmpfile=rt_test_tmpfile
+    ftruncate=rt_test_ftruncate fclose=rt_test_fclose mmap=rt_test_mmap munmap=rt_test_munmap)
+add_executable(test_direct_memory_faults ${PB_ROOT}/test/test_direct_memory_faults.c $<TARGET_OBJECTS:pb_direct_memory_faults>)
+target_include_directories(test_direct_memory_faults PRIVATE ${PB_ROOT}/runtime/include)
+add_test(NAME direct_memory_faults COMMAND test_direct_memory_faults)
+set_tests_properties(direct_memory_core direct_memory_faults PROPERTIES TIMEOUT 20)

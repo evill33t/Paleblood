@@ -67,3 +67,18 @@ add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+
+add_library(pb_direct_memory STATIC runtime/direct_memory.c)
+target_include_directories(pb_direct_memory PUBLIC runtime/include)
+add_executable(test_direct_memory test/test_direct_memory.c)
+target_link_libraries(test_direct_memory PRIVATE pb_direct_memory)
+add_test(NAME direct_memory_core COMMAND test_direct_memory)
+# Link one production core object with test-only host-boundary aliases.
+add_library(pb_direct_memory_faults OBJECT runtime/direct_memory.c)
+target_include_directories(pb_direct_memory_faults PRIVATE runtime/include)
+target_compile_definitions(pb_direct_memory_faults PRIVATE calloc=rt_test_calloc tmpfile=rt_test_tmpfile
+    ftruncate=rt_test_ftruncate fclose=rt_test_fclose mmap=rt_test_mmap munmap=rt_test_munmap)
+add_executable(test_direct_memory_faults test/test_direct_memory_faults.c $<TARGET_OBJECTS:pb_direct_memory_faults>)
+target_include_directories(test_direct_memory_faults PRIVATE runtime/include)
+add_test(NAME direct_memory_faults COMMAND test_direct_memory_faults)
+set_tests_properties(direct_memory_core direct_memory_faults PROPERTIES TIMEOUT 20)
