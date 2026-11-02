@@ -31,6 +31,8 @@
 #include "runtime/syslib.h"
 
 #include <pthread.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -56,6 +58,9 @@ typedef struct {
 
 static pthread_mutex_t pool_lock = PTHREAD_MUTEX_INITIALIZER;
 static int pool_fd = -1;
+#if defined(__APPLE__) && defined(__MACH__)
+static FILE *pool_file; /* Own the anonymous sparse file for every live mapping. */
+#endif
 static direct_range ranges[MAX_RANGES]; /* allocated ranges, ascending by start */
 static int range_count;
 
@@ -67,7 +72,15 @@ static int is_power_of_two(uint64_t value) { return value && !(value & (value - 
 static int pool(const char *caller)
 {
     if (pool_fd >= 0) return pool_fd;
+#if defined(__APPLE__) && defined(__MACH__)
+    pool_file = tmpfile();
+    if (!pool_file) rt_fatal(caller, "cannot create the host file that holds direct memory");
+    const int fd = fileno(pool_file);
+    if (fd < 0 || fcntl(fd, F_SETFD, FD_CLOEXEC))
+        rt_fatal(caller, "cannot own the host direct-memory file descriptor");
+#else
     const int fd = memfd_create("direct-memory", MFD_CLOEXEC);
+#endif
     if (fd < 0 || ftruncate(fd, (off_t)RT_DIRECT_MEMORY_SIZE) != 0)
         rt_fatal(caller, "cannot create the host file that holds direct memory");
     pool_fd = fd;
@@ -199,8 +212,17 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
            the alignment stop by name. */
         aligned = *address;
         if ((uintptr_t)aligned & (alignment - 1)) rt_fatal(name, "an address hint off the alignment: the answer is not established");
-        void *const got = mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED_NOREPLACE, pool(name), (off_t)start);
-        if (got != aligned) rt_fatal(name, "an address hint in use: where the system then maps is not established");
+#if defined(__APPLE__) && defined(__MACH__)
+        const int map_flags = MAP_SHARED; /* Ordinary hint: never replace an existing map. */
+#else
+        const int map_flags = MAP_SHARED | MAP_FIXED_NOREPLACE;
+#endif
+        void *const got = mmap(aligned, length, host_protection, map_flags, pool(name), (off_t)start);
+        if (got != aligned) {
+            if (got != MAP_FAILED && munmap(got, length))
+                rt_fatal(name, "cannot release the declined host address hint");
+            rt_fatal(name, "an address hint in use: where the system then maps is not established");
+        }
     } else {
         /* Reserve enough to place an aligned address, then put the range's pages there. */
         const uint64_t reserve = length + alignment;
