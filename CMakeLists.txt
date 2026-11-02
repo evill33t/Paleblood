@@ -170,3 +170,7 @@ add_executable(test_sysmodule_wire test/test_sysmodule_wire.c
 target_include_directories(test_sysmodule_wire PRIVATE runtime/include)
 add_test(NAME sysmodule_wire COMMAND test_sysmodule_wire)
 set_tests_properties(sysmodule_wire PROPERTIES TIMEOUT 10)
+
+add_executable(test_host_file_stat test/test_host_file_stat.c runtime/process.c runtime/syslib/table.c)
+target_include_directories(test_host_file_stat PRIVATE runtime/include)
+add_test(NAME host_file_stat COMMAND test_host_file_stat)
