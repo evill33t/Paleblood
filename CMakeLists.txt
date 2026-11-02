@@ -150,3 +150,17 @@ add_executable(test_compiled_sdk test/test_compiled_sdk.c
 target_include_directories(test_compiled_sdk PRIVATE runtime/include)
 add_test(NAME compiled_sdk COMMAND test_compiled_sdk)
 set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
+add_library(pb_direct_memory STATIC runtime/direct_memory.c)
+target_include_directories(pb_direct_memory PUBLIC runtime/include)
+add_executable(test_direct_memory test/test_direct_memory.c)
+target_link_libraries(test_direct_memory PRIVATE pb_direct_memory)
+add_test(NAME direct_memory_core COMMAND test_direct_memory)
+# Link one production core object with test-only host-boundary aliases.
+add_library(pb_direct_memory_faults OBJECT runtime/direct_memory.c)
+target_include_directories(pb_direct_memory_faults PRIVATE runtime/include)
+target_compile_definitions(pb_direct_memory_faults PRIVATE calloc=rt_test_calloc tmpfile=rt_test_tmpfile
+    ftruncate=rt_test_ftruncate fclose=rt_test_fclose mmap=rt_test_mmap munmap=rt_test_munmap)
+add_executable(test_direct_memory_faults test/test_direct_memory_faults.c $<TARGET_OBJECTS:pb_direct_memory_faults>)
+target_include_directories(test_direct_memory_faults PRIVATE runtime/include)
+add_test(NAME direct_memory_faults COMMAND test_direct_memory_faults)
+set_tests_properties(direct_memory_core direct_memory_faults PROPERTIES TIMEOUT 20)
