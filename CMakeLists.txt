@@ -67,3 +67,11 @@ add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+
+# Host-owned logical slot selection, independent of guest scheduler policy.
+add_library(pb_logical_cpu STATIC runtime/logical_cpu.c)
+target_include_directories(pb_logical_cpu PUBLIC runtime/include)
+add_executable(test_logical_cpu test/test_logical_cpu.c)
+target_link_libraries(test_logical_cpu PRIVATE pb_logical_cpu)
+add_test(NAME logical_cpu_slots COMMAND test_logical_cpu)
+set_tests_properties(logical_cpu_slots PROPERTIES TIMEOUT 10)
