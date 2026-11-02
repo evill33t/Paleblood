@@ -57,3 +57,22 @@ this unit does not register a setter or pretend to support guest worker threads.
 bit63, rejected truncation, fresh versus captured masks, live subset changes, unknown CPU
 expansion, eight-byte canaries, alias output, invalid-attribute errors and provider failure.
 Actual Linux backend/build/boot validation is separate from these planned unit tests.
+
+## Explicit Darwin logical slots
+
+The selected x86-64 Darwin startup can opt into `--guest-cpu-count N` for a decimal count
+from 1 through 64, or `--guest-cpu-count host` to freeze one checked `hw.logicalcpu` reading.
+These are immutable, unpinned Paleblood slot labels. They do not describe console topology,
+the calling host thread's allowed CPU IDs, or hard affinity. A host count outside the supported
+domain is rejected rather than truncated. Import listing does not perform the host query.
+
+A captured main-thread attribute publishes the selected low-count mask; fresh attributes retain
+the separately documented unrestricted low-64-bit sentinel. The existing affinity setters keep
+recorded metadata and do not apply host pinning. Without the explicit logical policy, Darwin
+main-thread identity and stack are available, while a native-affinity snapshot stops by name.
+`BB_RUNTIME_CPU_MAP` belongs to the distinct Linux native-ID policy and cannot be combined with
+this option. Repeated, malformed and conflicting options fail before guest entry.
+
+Guest worker TLS qualification, current-CPU queries and native Darwin affinity remain unsupported.
+Owned startup and injected-query tests establish this policy only; they do not establish original
+game boot or scheduling equivalence.
