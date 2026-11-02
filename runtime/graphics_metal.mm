@@ -115,6 +115,33 @@ rt_metal_status rt_metal_offscreen_clear(rt_metal_offscreen *context, const uint
     }
 }
 
+rt_metal_status rt_metal_offscreen_upload(rt_metal_offscreen *context, const void *source,
+                                         size_t stride, size_t capacity, char *error, size_t error_size)
+{
+    if (!context || !source)
+        return result(RT_METAL_INVALID_ARGUMENT, error, error_size, "upload requires a context and source");
+    const size_t row = static_cast<size_t>(context->width) * 4, lines = context->height - 1;
+    if (stride < row || (lines && stride > (SIZE_MAX - row) / lines) || capacity < stride * lines + row)
+        return result(RT_METAL_INVALID_ARGUMENT, error, error_size, "upload stride/capacity overflow or insufficient storage");
+    if (context->failed)
+        return result(RT_METAL_GPU_FAILED, error, error_size, "destroy the failed context before upload");
+    // Pack arbitrary caller padding into tightly spaced rows accepted by the RGBA8 texture.
+    // The preceding serialized clear already waited for its GPU commands to complete.
+    for (size_t y = 0; y < context->height; y++)
+        std::memcpy(context->pixels.get() + y * row, static_cast<const uint8_t *>(source) + y * stride, row);
+    @try {
+        @autoreleasepool {
+            [context->texture replaceRegion:MTLRegionMake2D(0, 0, context->width, context->height)
+                               mipmapLevel:0 withBytes:context->pixels.get() bytesPerRow:row];
+        }
+    } @catch (NSException *exception) {
+        context->failed = true;
+        return result(RT_METAL_GPU_FAILED, error, error_size, exception.reason.UTF8String);
+    }
+    context->readable = true;
+    return result(RT_METAL_OK, error, error_size, "");
+}
+
 rt_metal_status rt_metal_offscreen_read(rt_metal_offscreen *context, void *destination,
                                        size_t stride, size_t capacity, char *error, size_t error_size)
 {
@@ -126,7 +153,7 @@ rt_metal_status rt_metal_offscreen_read(rt_metal_offscreen *context, void *desti
     if (context->failed)
         return result(RT_METAL_GPU_FAILED, error, error_size, "failed context has no readable result");
     if (!context->readable)
-        return result(RT_METAL_NOT_READY, error, error_size, "clear must complete before readback");
+        return result(RT_METAL_NOT_READY, error, error_size, "clear or upload must complete before readback");
     @try {
         @autoreleasepool {
             [context->texture getBytes:context->pixels.get() bytesPerRow:row

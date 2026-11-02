@@ -23,7 +23,7 @@ typedef enum {
    CPU-readable storage requires a unified-memory Metal device. Dimensions1..4096 are this
    primitive's own allocation bound, not a claim about device limits. *out must initially be NULL;
    failures leave it unchanged. Optional error buffers receive a bounded nul-terminated message.
-   An error buffer must be disjoint from the context/handle, destination and color memory. */
+   An error buffer must be disjoint from the context/handle, destination, source and color memory. */
 rt_metal_status rt_metal_offscreen_create(uint32_t width, uint32_t height, rt_metal_offscreen **out,
                                          char *error, size_t error_size);
 
@@ -33,7 +33,16 @@ rt_metal_status rt_metal_offscreen_create(uint32_t width, uint32_t height, rt_me
 rt_metal_status rt_metal_offscreen_clear(rt_metal_offscreen *context, const uint8_t rgba[4],
                                         uint32_t timeout_ms, char *error, size_t error_size);
 
-/* Read only after a successful clear. Copy width*4 bytes per row, preserving all destination
+/* Copy a complete RGBA8 frame into the texture, synchronously, with no color conversion or
+   vertical flip. Source row zero becomes texture row zero. stride is in bytes and may include
+   arbitrary padding; capacity need only cover the final pixel. No source pointer is retained.
+   Invalid arguments leave the prior texture/readiness unchanged. A backend error poisons the
+   context. The source must be valid caller memory disjoint from the context and error buffer.
+   Like clear/read, upload must be serialized by the context owner. */
+rt_metal_status rt_metal_offscreen_upload(rt_metal_offscreen *context, const void *source,
+                                         size_t stride, size_t capacity, char *error, size_t error_size);
+
+/* Read only after a successful clear or upload. Copy width*4 bytes per row, preserving all destination
    row padding. capacity need only cover the final pixel, not trailing padding. Invalid arguments
    and backend/state errors leave destination unchanged. Valid caller memory is required. */
 rt_metal_status rt_metal_offscreen_read(rt_metal_offscreen *context, void *destination,
