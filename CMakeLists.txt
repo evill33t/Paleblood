@@ -144,3 +144,9 @@ add_executable(test_logical_cpu test/test_logical_cpu.c)
 target_link_libraries(test_logical_cpu PRIVATE pb_logical_cpu)
 add_test(NAME logical_cpu_slots COMMAND test_logical_cpu)
 set_tests_properties(logical_cpu_slots PROPERTIES TIMEOUT 10)
+# Compiled-SDK wire validation over the loader-owned process parameters.
+add_executable(test_compiled_sdk test/test_compiled_sdk.c
+               runtime/syslib/table.c runtime/syslib/kernel_sdk.c)
+target_include_directories(test_compiled_sdk PRIVATE runtime/include)
+add_test(NAME compiled_sdk COMMAND test_compiled_sdk)
+set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
