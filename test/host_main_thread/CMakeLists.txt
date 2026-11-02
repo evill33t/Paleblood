@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+cmake_minimum_required(VERSION 3.20)
+project(paleblood_host_main_thread C)
+set(CMAKE_C_STANDARD 11)
+add_compile_options(-Wall -Wextra -Werror)
+enable_testing()
+get_filename_component(PB_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+add_executable(test_logical_cpu_registry "${PB_ROOT}/test/test_logical_cpu_registry.c" "${PB_ROOT}/runtime/syslib/kernel_thread.c" "${PB_ROOT}/runtime/syslib/table.c" "${PB_ROOT}/runtime/cpu.c" "${PB_ROOT}/runtime/memory.c" "${PB_ROOT}/runtime/logical_cpu.c" "${PB_ROOT}/runtime/process.c")
+target_include_directories(test_logical_cpu_registry PRIVATE "${PB_ROOT}/runtime/include")
+add_test(NAME host_main_logical COMMAND test_logical_cpu_registry)

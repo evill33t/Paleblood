@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include "runtime/cpu.h"
+#include "runtime/logical_cpu.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -72,6 +73,8 @@ void *rt_tls_block_create(void);
 
 /* Registers the calling host thread as the guest's main thread, running on the given stack. */
 void rt_thread_register_main(void *stack, uint64_t stack_size);
+/* Immutable own-port logical slots; never host affinity or console CPU identities. */
+rt_logical_cpu_result rt_thread_register_main_logical(void *stack, uint64_t stack_size, uint64_t count);
 
 /* Injected topology provider for the registered main thread; initialize once before guest execution. */
 rt_cpu_status rt_thread_register_main_cpu(void *stack, uint64_t stack_size, rt_cpu_query query,
