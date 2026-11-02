@@ -125,13 +125,18 @@ class ConsoleBoot(unittest.TestCase):
                 self.assertIsNone(status)
 
     def test_distinct_open_entrypoints_are_not_registered_as_aliases(self):
-        for name in ('open', 'sceKernelOpen'):
-            with self.subTest(name=name):
-                p, status = self.boot(image(open_name=name), extra=['--owned-console'])
-                self.assertEqual(p.returncode, 0, p.stderr)
-                self.assertEqual(status['outcome'], 'unimplemented')
-                self.assertEqual(status['first_unimplemented']['nid'], symbol(name).split('#')[0])
-                self.assertNotIn(MESSAGE, p.stdout)
+        p, status = self.boot(image(open_name='open'), extra=['--owned-console'])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(status['outcome'], 'unimplemented')
+        self.assertEqual(status['first_unimplemented']['nid'], symbol('open').split('#')[0])
+        self.assertNotIn(MESSAGE, p.stdout)
+        # The upstream SCE file backend owns its distinct read-only /app0 policy.
+        p, status = self.boot(image(open_name='sceKernelOpen'), extra=['--owned-console'])
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn(b'sceKernelOpen', p.stderr)
+        self.assertIn(b'a path outside /app0', p.stderr)
+        self.assertIsNone(status)
+        self.assertNotIn(MESSAGE, p.stdout)
 
     def test_library_namespace_is_exact(self):
         p, status = self.boot(image(library='libOwnedOther'), extra=['--owned-console'])
