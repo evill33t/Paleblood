@@ -2,6 +2,7 @@
 # Recording a hooked call by tracing the original (trace.c) needs Capstone to decode
 # instructions. Without it the runtime builds with trace_none.c: tracing is unavailable and
 # nothing is recorded (docs/capture-architecture.md).
+if(NOT APPLE)
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
     pkg_check_modules(CAPSTONE QUIET IMPORTED_TARGET capstone)
@@ -19,12 +20,27 @@ target_include_directories(bbrt PUBLIC include)
 if(CAPSTONE_FOUND)
     target_link_libraries(bbrt PUBLIC PkgConfig::CAPSTONE pthread)
 endif()
+endif()
 # The executable loader on its own, for the verification harness (tools/harness.py loads it).
 add_library(pbloader SHARED loader.c nid.c)
 target_include_directories(pbloader PUBLIC include)
 # The boot harness: runs the executable's entry on our runtime (runtime/boot.c). System library
 # implementations are compiled in directly, so the linker keeps every RT_SYSLIB entry.
 file(GLOB PB_SYSLIB CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/syslib/*.c)
-add_executable(pbboot boot.c loader.c memory.c nid.c process.c module.c cpu.c logical_cpu.c host_hooks.c host_time.c ${PB_SYSLIB})
+set(PB_BOOT_SUPPORT_SOURCES loader.c memory.c nid.c process.c module.c cpu.c logical_cpu.c host_hooks.c host_time.c ${PB_SYSLIB})
+if(APPLE)
+    list(APPEND PB_BOOT_SUPPORT_SOURCES boot_darwin.c guest_tls_darwin.c)
+endif()
+add_executable(pbboot boot.c ${PB_BOOT_SUPPORT_SOURCES})
 target_include_directories(pbboot PRIVATE include)
 target_link_libraries(pbboot PRIVATE ${CMAKE_DL_LIBS})
+set(PB_BOOT_ABSOLUTE_SOURCES)
+foreach(source IN LISTS PB_BOOT_SUPPORT_SOURCES)
+    if(IS_ABSOLUTE "${source}")
+        list(APPEND PB_BOOT_ABSOLUTE_SOURCES "${source}")
+    else()
+        list(APPEND PB_BOOT_ABSOLUTE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+    endif()
+endforeach()
+set(PB_BOOT_SUPPORT_SOURCES ${PB_BOOT_ABSOLUTE_SOURCES})
+set(PB_BOOT_SUPPORT_SOURCES "${PB_BOOT_SUPPORT_SOURCES}" PARENT_SCOPE)
