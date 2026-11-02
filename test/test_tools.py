@@ -549,6 +549,86 @@ class Loader(unittest.TestCase):
 
 
 
+
+    def test_sce_relro_copy_extent_flags_zero_fill_and_relocations(self):
+        import ps4elf
+        payload = bytes(range(0x40))
+        fixture = ps4elf.build(
+            segments=[(0, b'LOAD', 0x40, 5), (0x100, b'DATA', 0x20, 6)],
+            symbols=[('DATANID#A#B', ps4elf.STT_OBJECT, None)],
+            relocations=[(0x208, ps4elf.R_X86_64_RELATIVE, 0, 0x40),
+                         (0x218, ps4elf.R_X86_64_64, 1, 3),
+                         (0x258, ps4elf.R_X86_64_RELATIVE, 0, 0x77)],
+            relro_segments=[(0x200, payload, 0x60, 4)])
+        with self.opened_image(fixture) as exe:
+            self.assertEqual(exe['size'], 0x260)
+            self.assertEqual(exe['loads'], [(0, 0x40, 5), (0x100, 0x20, 6), (0x200, 0x60, 4)])
+            calls = []
+            def bind(user, index, kind):
+                calls.append((index, kind))
+                return 0x12340000
+            base, mapped = self.mapped_bytes(exe, bind)
+            self.assertEqual(calls, [(0, 1)])
+            expected = bytearray(0x260)
+            expected[:4] = b'LOAD'
+            expected[0x100:0x104] = b'DATA'
+            expected[0x200:0x240] = payload
+            struct.pack_into('<Q', expected, 0x208, base + 0x40)
+            struct.pack_into('<Q', expected, 0x218, 0x12340003)
+            struct.pack_into('<Q', expected, 0x258, base + 0x77)
+            self.assertEqual(mapped, expected)
+            # Nonzero, unrelocated RELRO bytes specifically distinguish the old zero-page result.
+            self.assertEqual(mapped[0x220:0x240], payload[0x20:])
+
+    def test_sce_relro_zero_file_range_is_zero_filled(self):
+        import ps4elf
+        for vaddr, memsz, extent in ((0x80, 0x20, 0xa0), (0x20, 0, 0x20)):
+            with self.subTest(vaddr=vaddr, memsz=memsz):
+                fixture = ps4elf.build([(0, b'LOAD', 0x20, 5)], [], [],
+                                      relro_segments=[(vaddr, b'', memsz, 4)])
+                with self.opened_image(fixture) as exe:
+                    self.assertEqual((exe['size'], exe['loads']),
+                                     (extent, [(0, 0x20, 5), (vaddr, memsz, 4)]))
+                    _, mapped = self.mapped_bytes(exe)
+                    self.assertEqual(mapped, b'LOAD' + bytes(extent - 4))
+
+    def test_sce_relro_malformed_ranges_are_rejected_before_mapping(self):
+        import harness
+        import ps4elf
+        original = ps4elf.build([(0, b'LOAD', 0x40, 5)], [], [],
+                               relro_segments=[(0x80, b'RELRO', 0x20, 4)])
+        relro_offset = struct.unpack_from('<Q', original, 64 + 56 + 8)[0]
+        for name, fixture, message in [('empty file', b'', 'cannot read'),
+                                       ('truncated RELRO file', original[:relro_offset + 4], 'outside the file')]:
+            with self.subTest(name=name), self.assertRaisesRegex(harness.BadInput, message):
+                with self.opened_image(fixture):
+                    pass
+        changes = [('outside file', 8, len(original), 'outside the file'),
+                   ('file larger than memory', 40, 4, 'larger than memory'),
+                   ('image end overflow', 16, (1 << 64) - 8, 'image range overflows')]
+        for name, offset, value, message in changes:
+            malformed = bytearray(original)
+            struct.pack_into('<Q', malformed, 64 + 56 + offset, value)
+            with self.subTest(name=name), self.assertRaisesRegex(harness.BadInput, message):
+                with self.opened_image(malformed):
+                    pass
+        # Reject overlap involving SCE RELRO in either header order; do not change LOAD-only policy.
+        for reversed_order in (False, True):
+            malformed = bytearray(original)
+            struct.pack_into('<Q', malformed, 64 + 56 + 16, 0x20)
+            if reversed_order:
+                a, b = bytes(malformed[64:120]), bytes(malformed[120:176])
+                malformed[64:120], malformed[120:176] = b, a
+            with self.subTest(reversed_order=reversed_order), self.assertRaisesRegex(harness.BadInput, 'overlaps'):
+                with self.opened_image(malformed):
+                    pass
+        only_relro = bytearray(original)
+        struct.pack_into('<I', only_relro, 64, 0)  # An SCE allocation alone does not replace mandatory PT_LOAD.
+        with self.assertRaisesRegex(harness.BadInput, 'no PT_LOAD'):
+            with self.opened_image(only_relro):
+                pass
+
+
 class Boot(unittest.TestCase):
     """runtime/boot.c (pbboot) on synthetic executables, and the NID it computes."""
 

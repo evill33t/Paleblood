@@ -11,7 +11,7 @@ STT_OBJECT, STT_FUNC = 1, 2
 DT_SCE_EXPORT_LIB, DT_SCE_IMPORT_LIB = 0x61000013, 0x61000015
 
 
-def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), tls=None, elf_type=0xfe10):
+def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), relro_segments=(), tls=None, elf_type=0xfe10):
     """segments: (vaddr, bytes, memsz, flags); symbols: (name, type, defined_value or None);
     relocations / jump_slots: (target, type, symbol index (1-based, 0 for none), addend);
     libraries: (DT_SCE_IMPORT_LIB or DT_SCE_EXPORT_LIB, name, id).
@@ -46,7 +46,7 @@ def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), 
             (0x6100002f, o_rela), (0x61000031, len(rela)), (0x61000029, o_jmp), (0x6100002d, len(jmprel)),
             *library_tags, (0, 0)]
     dynamic = b''.join(struct.pack('<qQ', t, v) for t, v in tags)
-    image_segments = [(1, *s) for s in segments]
+    image_segments = [(1, *s) for s in segments] + [(0x61000010, *s) for s in relro_segments]
     nph = len(image_segments) + 2 + (tls is not None)
     offset = (64 + 56 * nph + 0xfff) // 0x1000 * 0x1000
     body, phdrs = b'', []
