@@ -8,17 +8,24 @@
    mutex holds 2. Types: 1 error-checking (the default), 2 recursive, 3 normal, 4 adaptive.
    Protocols: 0 none, 1 priority inheritance, 2 priority protection. Error numbers are FreeBSD's,
    and an SCE error code is 0x80020000 plus that number. Each mutex is a host mutex of the same
-   type. */
+   type.
+
+   Condition variables (SCE names only) live here too, because a wait releases and retakes the
+   host mutex. A cond variable holds a pointer to an object the library allocates, or the static
+   initializer (NULL), set up on first use; a destroyed cond holds 1 (libthr). */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 
 /* FreeBSD's numbers for the errors these functions return */
-enum { BSD_EPERM = 1, BSD_ENOMEM = 12, BSD_EBUSY = 16, BSD_EINVAL = 22, BSD_EDEADLK = 11, BSD_EAGAIN = 35 };
+enum { BSD_EPERM = 1, BSD_ENOMEM = 12, BSD_EBUSY = 16, BSD_EINVAL = 22, BSD_EDEADLK = 11, BSD_EAGAIN = 35,
+       BSD_ETIMEDOUT = 60 };
 #define SCE_KERNEL_ERROR(e) ((int)(0x80020000u + (unsigned)(e)))
 
 enum { TYPE_ERRORCHECK = 1, TYPE_RECURSIVE = 2, TYPE_NORMAL = 3, TYPE_ADAPTIVE = 4 };
@@ -33,6 +40,10 @@ typedef struct {
 typedef struct {
     pthread_mutex_t host;
     int type;
+    /* A recursive mutex's owner and how many times it holds it (0: free), changed only while the
+       host mutex is held, so a condition wait can release every level and take them back. */
+    pthread_t owner;
+    int depth;
 } guest_mutex;
 
 static pthread_mutex_t static_init = PTHREAD_MUTEX_INITIALIZER;
@@ -47,6 +58,7 @@ static int bsd_errno(int host)
     case EINVAL: return BSD_EINVAL;
     case EDEADLK: return BSD_EDEADLK;
     case EAGAIN: return BSD_EAGAIN;
+    case ETIMEDOUT: return BSD_ETIMEDOUT;
     default: rt_fatal("mutex", "host error without a FreeBSD equivalent here");
     }
 }
@@ -72,8 +84,24 @@ static int mutex_create(guest_mutex **out, int type, int protocol)
         return bsd_errno(r);
     }
     m->type = type;
+    m->depth = 0;
     *out = m;
     return 0;
+}
+
+/* After the host lock succeeded: one more level held by the caller (recursive mutexes only). */
+static int note_locked(guest_mutex *m, int host_result)
+{
+    if (!host_result && m->type == TYPE_RECURSIVE) {
+        m->owner = pthread_self();
+        m->depth++;
+    }
+    return bsd_errno(host_result);
+}
+
+static int owned_by_caller(const guest_mutex *m)
+{
+    return m->depth > 0 && pthread_equal(m->owner, pthread_self());
 }
 
 static int mutex_init(guest_mutex **mutex, guest_mutexattr **attr)
@@ -107,14 +135,14 @@ static int mutex_lock(guest_mutex **mutex)
 {
     guest_mutex *m;
     const int r = mutex_get(mutex, &m);
-    return r ? r : bsd_errno(pthread_mutex_lock(&m->host));
+    return r ? r : note_locked(m, pthread_mutex_lock(&m->host));
 }
 
 static int mutex_trylock(guest_mutex **mutex)
 {
     guest_mutex *m;
     const int r = mutex_get(mutex, &m);
-    return r ? r : bsd_errno(pthread_mutex_trylock(&m->host));
+    return r ? r : note_locked(m, pthread_mutex_trylock(&m->host));
 }
 
 static int mutex_unlock(guest_mutex **mutex)
@@ -124,6 +152,7 @@ static int mutex_unlock(guest_mutex **mutex)
     /* never locked, so not owned by the caller */
     if (m == MUTEX_INITIALIZER || m == MUTEX_ADAPTIVE_INITIALIZER) return BSD_EPERM;
     if (m == MUTEX_DESTROYED) return BSD_EINVAL;
+    if (m->type == TYPE_RECURSIVE && owned_by_caller(m)) m->depth--; /* the host unlock below succeeds */
     return bsd_errno(pthread_mutex_unlock(&m->host));
 }
 
@@ -174,6 +203,127 @@ static int attr_setprotocol(guest_mutexattr **attr, int protocol)
     return 0;
 }
 
+#define COND_INITIALIZER ((guest_cond *)0)
+#define COND_DESTROYED ((guest_cond *)1)
+
+typedef struct {
+    pthread_cond_t host;
+    atomic_int waiters; /* threads inside a wait: destroying the cond meanwhile is EBUSY */
+} guest_cond;
+
+static int cond_create(guest_cond **out)
+{
+    guest_cond *c = malloc(sizeof *c);
+    if (!c) return BSD_ENOMEM;
+    pthread_condattr_t a;
+    pthread_condattr_init(&a);
+    pthread_condattr_setclock(&a, CLOCK_MONOTONIC); /* deadlines are computed on this clock */
+    const int r = pthread_cond_init(&c->host, &a);
+    pthread_condattr_destroy(&a);
+    if (r) {
+        free(c);
+        return bsd_errno(r);
+    }
+    atomic_init(&c->waiters, 0);
+    *out = c;
+    return 0;
+}
+
+/* An empty attribute variable means the defaults (libthr). No imported call creates a condition
+   attribute, so what one the guest passes would hold is not established. */
+static int cond_init(const char *caller, guest_cond **cond, void **attr)
+{
+    if (!cond) return BSD_EINVAL;
+    if (attr && *attr) rt_fatal(caller, "condition attributes are not established");
+    return cond_create(cond);
+}
+
+/* The cond behind a variable, creating it for the static initializer. */
+static int cond_get(guest_cond **cond, guest_cond **out)
+{
+    if (!cond || *cond == COND_DESTROYED) return BSD_EINVAL;
+    if (*cond == COND_INITIALIZER) {
+        pthread_mutex_lock(&static_init);
+        const int r = *cond == COND_INITIALIZER ? cond_create(cond) : 0;
+        pthread_mutex_unlock(&static_init);
+        if (r) return r;
+    }
+    *out = *cond;
+    return 0;
+}
+
+static int cond_destroy(guest_cond **cond)
+{
+    if (!cond) return BSD_EINVAL;
+    guest_cond *c = *cond;
+    if (c == COND_DESTROYED) return BSD_EINVAL;
+    if (c == COND_INITIALIZER) return 0; /* never used: libthr leaves the initializer in place */
+    if (atomic_load(&c->waiters)) return BSD_EBUSY;
+    const int r = pthread_cond_destroy(&c->host);
+    if (r) return bsd_errno(r);
+    free(c);
+    *cond = COND_DESTROYED;
+    return 0;
+}
+
+static int cond_signal(guest_cond **cond)
+{
+    guest_cond *c;
+    const int r = cond_get(cond, &c);
+    return r ? r : bsd_errno(pthread_cond_signal(&c->host));
+}
+
+static int cond_broadcast(guest_cond **cond)
+{
+    guest_cond *c;
+    const int r = cond_get(cond, &c);
+    return r ? r : bsd_errno(pthread_cond_broadcast(&c->host));
+}
+
+/* Waits with the mutex, until `deadline` on the monotonic clock when there is one. libthr answers
+   EPERM when the caller does not own the mutex, for every type; the host checks that for the
+   error-checking (default) type only. For a recursive mutex libthr saves how many levels the caller
+   holds, releases the mutex completely for the wait and takes every level back afterwards
+   (_mutex_cv_unlock and _mutex_cv_lock, thr_mutex.c); the host's wait releases one level only, so
+   the runtime releases the others itself around it. */
+static int cond_wait(guest_cond **cond, guest_mutex **mutex, const struct timespec *deadline)
+{
+    guest_cond *c;
+    int r = cond_get(cond, &c);
+    if (r) return r;
+    if (!mutex || *mutex == MUTEX_DESTROYED) return BSD_EINVAL;
+    guest_mutex *m = *mutex;
+    if (m == MUTEX_INITIALIZER || m == MUTEX_ADAPTIVE_INITIALIZER) return BSD_EPERM; /* never locked */
+    const int recursive = m->type == TYPE_RECURSIVE;
+    if (recursive && !owned_by_caller(m)) return BSD_EPERM;
+    const int levels = recursive ? m->depth : 0;
+    for (int i = 1; i < levels; i++) pthread_mutex_unlock(&m->host); /* all but the one the wait releases */
+    if (recursive) m->depth = 0;
+    atomic_fetch_add(&c->waiters, 1);
+    r = deadline ? pthread_cond_timedwait(&c->host, &m->host, deadline) : pthread_cond_wait(&c->host, &m->host);
+    atomic_fetch_sub(&c->waiters, 1);
+    if (recursive) {
+        for (int i = 1; i < levels; i++) pthread_mutex_lock(&m->host);
+        m->owner = pthread_self();
+        m->depth = levels;
+    }
+    return bsd_errno(r);
+}
+
+/* scePthreadCondTimedwait takes the most it may wait, in microseconds from now. */
+static struct timespec deadline_after(uint32_t microseconds)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    t.tv_sec += microseconds / 1000000;
+    t.tv_nsec += (long)(microseconds % 1000000) * 1000;
+    if (t.tv_nsec >= 1000000000) {
+        t.tv_sec++;
+        t.tv_nsec -= 1000000000;
+    }
+    return t;
+}
+
 /* libkernel: SCE error codes. scePthreadMutexInit's third argument is a name, used for debugging. */
 static int sce_mutex_init(guest_mutex **m, guest_mutexattr **a, const char *name) { (void)name; return sce(mutex_init(m, a)); }
 static int sce_mutex_destroy(guest_mutex **m) { return sce(mutex_destroy(m)); }
@@ -193,6 +343,35 @@ RT_SYSLIB("libkernel", scePthreadMutexattrInit, sce_attr_init);
 RT_SYSLIB("libkernel", scePthreadMutexattrDestroy, sce_attr_destroy);
 RT_SYSLIB("libkernel", scePthreadMutexattrSettype, sce_attr_settype);
 RT_SYSLIB("libkernel", scePthreadMutexattrSetprotocol, sce_attr_setprotocol);
+
+/* scePthreadCondInit's third argument is a name too. */
+static int sce_cond_init(guest_cond **c, void **a, const char *name) { (void)name; return sce(cond_init("scePthreadCondInit", c, a)); }
+static int sce_cond_destroy(guest_cond **c) { return sce(cond_destroy(c)); }
+static int sce_cond_signal(guest_cond **c) { return sce(cond_signal(c)); }
+static int sce_cond_broadcast(guest_cond **c) { return sce(cond_broadcast(c)); }
+static int sce_cond_wait(guest_cond **c, guest_mutex **m) { return sce(cond_wait(c, m, NULL)); }
+static int sce_cond_timedwait(guest_cond **c, guest_mutex **m, uint32_t microseconds)
+{
+    const struct timespec deadline = deadline_after(microseconds);
+    return sce(cond_wait(c, m, &deadline));
+}
+RT_SYSLIB("libkernel", scePthreadCondInit, sce_cond_init);
+RT_SYSLIB("libkernel", scePthreadCondDestroy, sce_cond_destroy);
+RT_SYSLIB("libkernel", scePthreadCondSignal, sce_cond_signal);
+RT_SYSLIB("libkernel", scePthreadCondBroadcast, sce_cond_broadcast);
+RT_SYSLIB("libkernel", scePthreadCondWait, sce_cond_wait);
+RT_SYSLIB("libkernel", scePthreadCondTimedwait, sce_cond_timedwait);
+
+/* libScePosix: the same calls with errno values. pthread_cond_timedwait is left out: its absolute
+   timespec and the clock it is measured on are not established from evidence yet, so a call stays
+   unbound and stops the boot by name. */
+static int posix_cond_init(guest_cond **c, void **a) { return cond_init("pthread_cond_init", c, a); }
+static int posix_cond_wait(guest_cond **c, guest_mutex **m) { return cond_wait(c, m, NULL); }
+RT_SYSLIB("libScePosix", pthread_cond_init, posix_cond_init);
+RT_SYSLIB("libScePosix", pthread_cond_destroy, cond_destroy);
+RT_SYSLIB("libScePosix", pthread_cond_signal, cond_signal);
+RT_SYSLIB("libScePosix", pthread_cond_broadcast, cond_broadcast);
+RT_SYSLIB("libScePosix", pthread_cond_wait, posix_cond_wait);
 
 /* libScePosix: errno values */
 static int posix_mutex_init(guest_mutex **m, guest_mutexattr **a) { return mutex_init(m, a); }

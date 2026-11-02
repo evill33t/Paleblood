@@ -113,6 +113,7 @@ infer that it is implemented from its registry entry.
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x0111a8a0` | 26 | `kernel_thread_self` | edge-verified | Copy the complete opaque current-thread handle to the output and return zero |
 | `0x02483e80` | 204 | `kernel_condition_wait` | verified | Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path |
 | `0x0111ad80` | 23 | `kernel_semaphore_destroy` | edge-verified | Forward the opaque handle to kernel deletion; translate nonzero low32 results to `0x21` |
 | `0x0111ada0` | 30 | `kernel_semaphore_wait` | edge-verified | Wait for one unit with a null timeout pointer; translate nonzero low32 results to `0x21` |

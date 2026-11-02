@@ -38,8 +38,8 @@ class Fixture(unittest.TestCase):
                   ['address', 'size', 'name', 'system', 'status', 'notes'],
                   [['0x00401000', '100', 'frame_timing_update', 'frame_timing', 'verified', ''],
                    ['0x00402000', '50', 'camera_follow', 'camera', 'original', '']])
-        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system'],
-                  [['0x00401000', 'bb_frame_timing_update', 'frame_timing']])
+        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system', 'returns'],
+                  [['0x00401000', 'bb_frame_timing_update', 'frame_timing', 'void']])
         write_csv(f'{self.d}/symbols/reviews.csv', ['address', 'name', 'date', 'reviewer', 'verdict', 'notes'],
                   [['0x00401000', 'frame_timing_update', '2026-01-01', 'independent session', 'approved', '']])
         # a clean, current verification record (no source file here, so the source hash is empty)
@@ -122,15 +122,15 @@ class Validate(Fixture):
         self.assertIn('below the image base', r.stderr)
 
     def test_replaced_needs_hook(self):
-        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system'], [])
+        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system', 'returns'], [])
         r = run('validate_functions.py', '--root', self.d)
         self.assertEqual(r.returncode, 1)
         self.assertIn('no game/hooks.csv entry', r.stderr)
 
     def test_hook_for_original_rejected(self):
-        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system'],
-                  [['0x00401000', 'bb_frame_timing_update', 'frame_timing'],
-                   ['0x00402000', 'bb_camera_follow', 'camera']])
+        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system', 'returns'],
+                  [['0x00401000', 'bb_frame_timing_update', 'frame_timing', 'void'],
+                   ['0x00402000', 'bb_camera_follow', 'camera', 'void']])
         r = run('validate_functions.py', '--root', self.d)
         self.assertEqual(r.returncode, 1)
         self.assertIn("only replaced, edge-verified or verified", r.stderr)
@@ -163,6 +163,19 @@ class Merge(Fixture):
         r = run('merge_functions.py', self.rows(['0x00403000', '11', 'camera_shake', 'camera', 'original', '']),
                 '--root', self.d)
         self.assertEqual(r.returncode, 1)
+        self.assertEqual(before, open(f'{self.d}/symbols/functions.csv').read())
+
+
+    def test_malformed_row_writes_nothing(self):
+        # A row with an unquoted comma in its notes has one field too many: a clear error, and
+        # functions.csv is left whole (it was once left half written).
+        with open(f'{self.d}/symbols/functions.csv', 'a') as f:
+            f.write('0x00404000,10,camera_zoom,camera,original,a note, with a comma\n')
+        before = open(f'{self.d}/symbols/functions.csv').read()
+        r = run('merge_functions.py', self.rows(['0x00405000', '10', 'camera_pan', 'camera', 'original', '']),
+                '--root', self.d)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('expected 6 fields', r.stderr)
         self.assertEqual(before, open(f'{self.d}/symbols/functions.csv').read())
 
 
@@ -581,6 +594,21 @@ class Boot(unittest.TestCase):
             p = subprocess.run([self.pbboot, exe, *args], capture_output=True, text=True, timeout=60)
             self.assertEqual(p.returncode, 2, (bad, p.stderr))
 
+    def test_bad_system_param_arguments_are_refused(self):
+        exe = os.path.join(ROOT, 'no-such.elf')
+        for bad in (['1'], ['1='], ['x=3'], ['1=3x'], ['1=3', '1=4']):
+            args = [a for param in bad for a in ('--system-param', param)]
+            p = subprocess.run([self.pbboot, exe, *args], capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 2, (bad, p.stderr))
+
+    def test_bad_app_param_arguments_are_refused(self):
+        exe = os.path.join(ROOT, 'no-such.elf')
+        for bad in (['1'], ['1='], ['x=3'], ['1=3x'], ['-1=3'], ['1=0x100000000'], ['boot=3'],
+                    ['1=3', '1=unread'], ['boot=unread', 'boot=unread']):
+            args = [a for param in bad for a in ('--app-param', param)]
+            p = subprocess.run([self.pbboot, exe, *args], capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 2, (bad, p.stderr))
+
     def test_boot_passes_stub_modules_with_their_ids(self):
         import boot
         d = tempfile.mkdtemp()
@@ -598,6 +626,64 @@ class Boot(unittest.TestCase):
         finally:
             shutil.rmtree(d)
         self.assertTrue(boot.stub_module_args(ROOT))      # every stub in the game's own list has its id
+
+    def test_boot_app0_defaults_to_the_merged_copy(self):
+        import boot
+        old = {k: os.environ.pop(k, None) for k in ('BB_APP0', 'BB_DATA_ROOT')}
+        try:
+            os.environ['BB_DATA_ROOT'] = '/data/root'
+            self.assertEqual(boot.default_app0(), '/data/root/merged')
+            os.environ['BB_APP0'] = '/my/copy'
+            self.assertEqual(boot.default_app0(), '/my/copy')
+        finally:
+            for k, v in old.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_boot_system_params_default_and_override(self):
+        import boot
+        self.assertEqual(boot.system_param_args([]), ['--system-param', '1=1'])
+        self.assertEqual(boot.system_param_args(['1=18', '0x4=5']),
+                         ['--system-param', '1=18', '--system-param', '4=5'])
+        with self.assertRaises(ValueError):
+            boot.system_param_args(['language=18'])
+
+    def test_boot_passes_runtime_modules_and_app_params(self):
+        import boot
+        import struct as st
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, 'game'))
+            with open(os.path.join(d, 'game', 'modules.csv'), 'w') as fh:
+                fh.write('module,action,sysmodule,notes\nlibR,runtime,0x00b4,provided\n')
+            self.assertEqual(boot.stub_module_args(d), ['--stub-module', '0x00b4:libR'])
+            # A parameter file with one string and two integers (PSF: header, key index, keys, data).
+            keys = b'TITLE\0USER_DEFINED_PARAM_1\0OTHER\0'
+            entries = [(0, 0x0204, 4, 4, 0), (6, 0x0404, 4, 4, 4), (27, 0x0404, 4, 4, 8)]
+            key_table = 20 + 16 * len(entries)
+            data_table = key_table + len(keys)
+            sfo = st.pack('<4sIIII', b'\0PSF', 0x101, key_table, data_table, len(entries))
+            sfo += b''.join(st.pack('<HHIII', *e) for e in entries) + keys + b'abc\0' + st.pack('<ii', 13, -2)
+            sfo_path = os.path.join(d, 'param.sfo')
+            with open(sfo_path, 'wb') as fh:
+                fh.write(sfo)
+            self.assertEqual(boot.sfo_integers(sfo_path), {'USER_DEFINED_PARAM_1': 13, 'OTHER': -2})
+            params = os.path.join(d, 'game', 'app_params.csv')
+            with open(params, 'w') as fh:
+                fh.write('id,source,key,notes\nboot,unread,,n\n0,unread,,n\n1,sfo,USER_DEFINED_PARAM_1,n\n')
+            self.assertEqual(boot.app_param_args(d, sfo_path),
+                             ['--app-param', 'boot=unread', '--app-param', '0=unread', '--app-param', '1=13'])
+            with open(params, 'a') as fh:
+                fh.write('2,sfo,USER_DEFINED_PARAM_2,not in the file\n')
+            with self.assertRaises(ValueError):
+                boot.app_param_args(d, sfo_path)
+            with open(params, 'w') as fh:
+                fh.write('id,source,key,notes\n3,guess,,n\n')
+            with self.assertRaises(ValueError):
+                boot.app_param_args(d, sfo_path)
+        finally:
+            shutil.rmtree(d)
 
     def test_c_nid_matches_python(self):
         import ctypes

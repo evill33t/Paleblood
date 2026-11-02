@@ -64,7 +64,7 @@ Two other clock functions are easy to mistake for part of the limiter:
   frame-rate patches overwrite it and its neighbours with their own code (a code cave), so it is
   not replaced.
 - The millisecond clock `frame_timing_get_monotonic_ms` (`0x0111a7f0`), its microsecond twin
-  `0x0111a760` and the sleep wrapper `0x0111a880` are not on the limiter's path. They look like
+  `0x0111a760` and the sleep wrapper `0x0111a880` (now replaced, see below) are not on the limiter's path. They look like
   the timing layer of a separate subsystem.
 
 <details>
@@ -76,6 +76,99 @@ their callers sit in one region (`0x0110e...`-`0x0121b...`) that shares its own 
 no frame-rate patch touches any of them: they look like the timing layer of a separate
 subsystem (unidentified; possibly middleware). Their system label may move once that
 subsystem is known.
+
+</details>
+
+### The fixed-step state methods
+
+Many small objects in the game advance in fixed steps of 1/30 s, whatever the real frame time is.
+The community "60 FPS++" patch changes those steps to 1/60 s, so knowing exactly which functions it
+edits, and what each belongs to, is part of running the game faster than 30 FPS. Paleblood has
+replaced a growing set of them in `game/frame_timing/fixed_step_states.cpp`.
+
+The latest belong to the **Chalice Dungeon gate**, the object behind the ritual altar:
+
+- **Its steps have names.** The gate (`SprjDungeonGateIns`) keeps a table of 24 steps whose names
+  are in the executable. They give its states their meaning: loading a channel, no chalice, a local
+  or online ritual, a local or online dungeon, and an error display.
+- **Finding the gate.** The game finds the current gate through `SprjHolygrail`. The highest of
+  seven event flags, 9020 to 9026, picks one of eight gate slots; with none set, it uses the last
+  slot.
+- **Waiting for it.** Two methods advance the gate while it is busy and are done once it is idle.
+  Two more wait until it is idle in a dungeon mode, or in a ritual mode.
+- **Leaving a mode.** One method, held by an object that points to the gate, takes the gate out of
+  a ritual or dungeon mode (request 7) and out of the error mode (request 10), around a check on
+  the gate that reads the online manager, and reports when the check passes in the online dungeon
+  mode. What its caller does with that answer is not known: the caller ignores it.
+- **The check itself.** It passes only when the gate is idle in mode 1 (no Holy Chalice), four
+  bytes of the online manager (`FrpgNetMan`) allow it (one set, three clear; what they mean is not
+  known), and the id it is given is set. It then looks up an object for that id and keeps it as
+  the gate's handle, a reference-counted pointer: the engine counts how many holders an object has
+  and destroys it when the last one lets go, so swapping the handle drops the old object's count
+  and takes one on the new. Finally, if the gate is still idle, it gives the gate request 6 and
+  reports success. That the id names an online session is a guess.
+- **Its sibling, the entry check.** It opens with the same gates, then searches a list for the
+  first entry with a given key that holds an object, and keeps that object as the gate's handle in
+  the same way, with request 4 instead of 6. When the gate becomes busy while the old handle is let
+  go, it stops and reports failure rather than trying the next entry.
+- **Letting the handle go again.** In a ritual mode a third method resets the handle. In the
+  local ritual mode it always may; in the server ritual mode only when the online manager's bytes
+  allow it and a flag bit in the handled object is clear. It clears one word of that object, hands
+  the handle to a routine not yet analyzed (`0x01e9cb80`), and gives the gate request 8.
+  A fourth method does the same under the same rules but first gathers the gate's sixteen slots:
+  each active one goes into a short list (its key, its number, and a value the caller supplies for
+  it), built on one of the engine's memory heaps. With no active slot it does nothing; otherwise
+  it hands the handle and the list on (`0x01e9cd20`, not yet analyzed), gives request 8, and then
+  frees the list's memory.
+- **Passing the handle on.** A readiness check lets the gate go on when it is idle in a ritual or
+  dungeon mode and the online manager allows it; in the server modes the handled object must also
+  have one word at zero. Two methods that differ only in a "kind" number (1 or 2) run that check,
+  clear two words of the handled object, hand the handle on with the kind (to one routine in the
+  local modes, another in the server modes, neither analyzed yet), and give request 9.
+- **Creating the handle.** Two methods make the handle in the first place, both only while the
+  gate is idle in mode 1. One drops the old handle, builds a new handled object from two blocks of
+  data, a block of the online manager and a name (the current name entry's, or a default), and
+  gives request 3. The other reads four "levels" from event flags: for each of four base flags, the
+  highest level from 9 down to 1 whose flag is set (flag numbers 6228 to 6287, every seventh one
+  belonging to the same column). It builds the handled object from those four levels and gives
+  request 5. What the levels and the flags stand for in the game is not known yet.
+
+The millisecond sleep wrapper (`0x0111a880`), which is not on the limiter's path, is replaced too.
+It converts the engine's millisecond delay to the kernel's microseconds. It multiplies in 32 bits,
+as the original does, so very large delays wrap, and it always reports success.
+
+<details>
+<summary>Fixed-step methods: PRs, contributors and evidence</summary>
+
+- [#104](https://github.com/Yharnam-Hunters/Paleblood/pull/104) by
+  [@evill33t](https://github.com/evill33t): the millisecond sleep wrapper.
+- [#138](https://github.com/Yharnam-Hunters/Paleblood/pull/138): five `SprjDungeonGateIns`
+  methods that step the gate's state (`0x01eb5390`, `0x01eb5490`, and the event handlers at
+  `0x01eb9020`, `0x01ebb090`, `0x01ebf060`).
+- [#141](https://github.com/Yharnam-Hunters/Paleblood/pull/141): four methods that find the
+  gate through `SprjHolygrail` (`0x0200f970`, `0x020118f0`, `0x01f03210`, `0x01f03680`).
+- [#182](https://github.com/Yharnam-Hunters/Paleblood/pull/182): the method that leaves the
+  gate's modes around the check `0x01ea5280` (`0x01ec3ef0`, eleven 60 FPS++ edits).
+- [#186](https://github.com/Yharnam-Hunters/Paleblood/pull/186): the check itself
+  (`0x01ea5280`, one 60 FPS++ edit), using the engine's shared reference counting from
+  [#185](https://github.com/Yharnam-Hunters/Paleblood/pull/185).
+- [#188](https://github.com/Yharnam-Hunters/Paleblood/pull/188): the entry check (`0x01ea4a10`,
+  one 60 FPS++ edit). Part of it sits in bytes the decompiler leaves out after an error report;
+  see [Ghidra & PS4 Quirks](../../QUIRKS.md).
+- [#192](https://github.com/Yharnam-Hunters/Paleblood/pull/192): the ritual handle reset
+  (`0x01ea5670`, one 60 FPS++ edit).
+- [#194](https://github.com/Yharnam-Hunters/Paleblood/pull/194): the ritual slot reset
+  (`0x01ea5850`, one 60 FPS++ edit).
+- [#196](https://github.com/Yharnam-Hunters/Paleblood/pull/196): the readiness check
+  (`0x01ea5c90`) and the two pass-on methods (`0x01ea5e20`, `0x01ea6080`; one 60 FPS++ edit
+  each).
+- [#198](https://github.com/Yharnam-Hunters/Paleblood/pull/198): the handle creation
+  (`0x01ea47a0`, one 60 FPS++ edit).
+- [#199](https://github.com/Yharnam-Hunters/Paleblood/pull/199): the level creation
+  (`0x01ea4cb0`, one 60 FPS++ edit), with the event-flag store shared with the event system.
+- Status: **replaced**, not verified. Each was compared with the original function on authored
+  edge cases, stock and with the 60 FPS++ edits, and wrong variants were rejected. None was
+  checked on frames recorded from a real game run.
 
 </details>
 
@@ -120,15 +213,34 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x0143e490` | 174 | `frame_timing_task_flush_queue_0143e490` | verified | task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock |
 | `0x0143f9f0` | 18 | `frame_timing_task_set_frame_value_0143f9f0` | verified | task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08 |
 | `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60 |
-| `0x01f6a9f0` | 121 | `frame_timing_until_idle_01f6a9f0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x0200d8a0` | 137 | `frame_timing_until_idle_0200d8a0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x0200e100` | 121 | `frame_timing_until_idle_0200e100` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x0200e270` | 151 | `frame_timing_request_7_0200e270` | edge-verified | state method: when idle in states 2..5, request 7 and advance the owner one fixed step (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x02012610` | 121 | `frame_timing_until_idle_02012610` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x02012780` | 122 | `frame_timing_request_10_02012780` | edge-verified | state method: when idle, request 10 and advance the owner one fixed step (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x020128f0` | 121 | `frame_timing_until_idle_020128f0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x02012a60` | 151 | `frame_timing_request_7_02012a60` | edge-verified | state method: when idle in states 2..5, request 7 and advance the owner one fixed step (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x02012bf0` | 121 | `frame_timing_until_idle_02012bf0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
+| `0x01ea47a0` | 611 | `frame_timing_gate_create_handle` | edge-verified | handle creation of the Chalice Dungeon gate state: idle in mode 1, drops the handle, creates one from two filled blocks, FrpgNetMan+0xa68 and a name, adopts it, request 3 |
+| `0x01ea4a10` | 501 | `frame_timing_gate_entry_check` | edge-verified | entry check of the Chalice Dungeon gate state: online gates as 0x01ea5280; keeps the first keyed entry's object as its handle, then request 4 |
+| `0x01ea4cb0` | 1472 | `frame_timing_gate_create_handle_from_levels` | edge-verified | level creation of the Chalice Dungeon gate state: online gates; four highest set levels (event flags 0x184d+i+7*level), a handle object from them, adopted; request 5 |
+| `0x01ea5280` | 553 | `frame_timing_gate_owner_check` | edge-verified | owner check of the Chalice Dungeon gate state: idle in mode 1, FrpgNetMan flags and an id allow it; keeps the object for the id as its handle, then request 6 |
+| `0x01ea5670` | 451 | `frame_timing_gate_ritual_handle_reset` | edge-verified | ritual handle reset of the Chalice Dungeon gate state: in a ritual mode (server: online gates, flag bit clear) clears the handle's +0x124, rebuilds it, then request 8 |
+| `0x01ea5850` | 708 | `frame_timing_gate_ritual_slot_reset` | edge-verified | ritual slot reset of the Chalice Dungeon gate state: as 0x01ea5670, but lists the active slots on the container heap and passes them on with the handle |
+| `0x01ea5c90` | 354 | `frame_timing_gate_ritual_or_dungeon_ready` | edge-verified | readiness check of the Chalice Dungeon gate state: idle in a local ritual/dungeon mode with FrpgNetMan's bytes allowing it, or a server one also needing a handle whose +0x50 is zero |
+| `0x01ea5e20` | 546 | `frame_timing_gate_pass_on_kind_1` | edge-verified | when ready (0x01ea5c90): clears the handle's +0x11c and +0x120, passes it on for the mode with kind 1 if its +0x50 is zero, then request 9 |
+| `0x01ea6080` | 546 | `frame_timing_gate_pass_on_kind_2` | edge-verified | as 0x01ea5e20 with kind 2 |
+| `0x01eb5390` | 182 | `frame_timing_dungeon_gate_step_init_for_channel_load` | edge-verified | SprjDungeonGateIns::STEP_Init_forChannelLoad: when the gate state is idle in ChannelLoad, request 2 and advance it one fixed step (1/30 s; 1/60 s in the 60 FPS patches) |
+| `0x01eb5490` | 246 | `frame_timing_dungeon_gate_step_mode_switch` | edge-verified | SprjDungeonGateIns::STEP_ModeSwitch: advance the gate state one fixed step while busy, then go to the first step of its mode |
+| `0x01eb9020` | 303 | `frame_timing_dungeon_gate_on_event_0` | edge-verified | SprjDungeonGateIns handler of event 0: request 1, then request 2, each advancing the gate state one fixed step |
+| `0x01ebb090` | 184 | `frame_timing_dungeon_gate_on_event_1000` | edge-verified | SprjDungeonGateIns handler of event 1000: when idle in states 2..5, request 7 and advance the gate state one fixed step |
+| `0x01ebf060` | 176 | `frame_timing_dungeon_gate_on_event_3000` | edge-verified | SprjDungeonGateIns handler of event 3000: when idle, request 10 and advance the gate state one fixed step |
+| `0x01ec3ef0` | 795 | `frame_timing_leave_modes_around_owner_check_01ec3ef0` | edge-verified | state method on the Chalice Dungeon gate: leaves ritual/dungeon modes (request 7), the error mode (request 10); true when check 0x01ea5280 says yes in server dungeon mode |
+| `0x01f03210` | 307 | `frame_timing_holygrail_wait_for_dungeon_mode` | edge-verified | state method: advance the current Chalice Dungeon gate (event flags 9020..9026 pick it) one fixed step while busy, then report whether it is in a dungeon mode; not reached by the routes yet |
+| `0x01f03680` | 296 | `frame_timing_holygrail_wait_for_ritual_mode` | edge-verified | state method: advance the current Chalice Dungeon gate one fixed step while busy, then report whether it is in a ritual mode; not reached by the routes yet |
+| `0x01f6a9f0` | 121 | `frame_timing_until_idle_01f6a9f0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet) |
+| `0x0200d8a0` | 137 | `frame_timing_until_idle_0200d8a0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet) |
+| `0x0200e100` | 121 | `frame_timing_until_idle_0200e100` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet) |
+| `0x0200e270` | 151 | `frame_timing_request_7_0200e270` | edge-verified | state method: when idle in states 2..5, request 7 and advance the owner one fixed step (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet) |
+| `0x0200f970` | 283 | `frame_timing_holygrail_until_idle_0200f970` | edge-verified | state method: advance the current Chalice Dungeon gate one fixed step while busy; done once idle; not reached by the routes yet |
+| `0x020118f0` | 283 | `frame_timing_holygrail_until_idle_020118f0` | edge-verified | state method: advance the current Chalice Dungeon gate one fixed step while busy; done once idle; not reached by the routes yet |
+| `0x02012610` | 121 | `frame_timing_until_idle_02012610` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet) |
+| `0x02012780` | 122 | `frame_timing_request_10_02012780` | edge-verified | state method: when idle, request 10 and advance the owner one fixed step (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet) |
+| `0x020128f0` | 121 | `frame_timing_until_idle_020128f0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet) |
+| `0x02012a60` | 151 | `frame_timing_request_7_02012a60` | edge-verified | state method: when idle in states 2..5, request 7 and advance the owner one fixed step (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet) |
+| `0x02012bf0` | 121 | `frame_timing_until_idle_02012bf0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet) |
 | `0x02418d20` | 467 | `frame_timing_frame_step` | verified | Per frame: SprjWindow running check; creates SprjFlipper; calls the limiter; runs the task update; returns running and not quitting |
 | `0x02434520` | 552 | `frame_timing_flipper_init` | verified | SprjFlipper constructor: reads Game.FlipMode (default 4; pending default 3; clamped to 4); unset in the shipped config |
 | `0x02434770` | 2077 | `frame_timing_pace_frame` | verified | Frame limiter: target interval at +0x18 (1/30 or 1/60 s); spins out the frame (the sleeping wait is compiled in but unused); 32-frame ring; every FPS patch edits it |

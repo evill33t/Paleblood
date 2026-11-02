@@ -13,14 +13,19 @@ How far the executable boots on our own runtime (`runtime/boot.c`, `tools/boot.p
 stops at the first system import we don't implement yet and names it. Each target implements
 what the boot stops at, clean room (CONTRIBUTING.md), then re-runs `tools/boot.py`.
 
-1. Generic input capture in the runtime: record a hooked function's inputs (arguments, the
-   memory it reads, its calls' results) from the runtime side, with no code in the function
-   (STYLE.md forbids recording code under `game/`). This replaces the per-function recorders that
-   were removed, so in-game recordings resume once the runtime runs the game, and
-   `tools/promote.py` can move `edge-verified` functions to `verified`.
-2. `scePthreadAttrGetaffinity` (libkernel), called by the game's own libc while it starts: needs
-   the main thread's CPU affinity mask on a PS4 (STATUS.md, "Open questions"). Then the next
-   import `tools/boot.py` names.
+1. `scePthreadAttrGetaffinity` (libkernel), called by the game's own libc while it starts: needs
+   the main thread's CPU affinity mask on a PS4 (STATUS.md, "Open questions") and a way to replace
+   a function inside a bundled module (claimed by BluePinetree on #34). Merged `main` stops here.
+   Past it (local discovery boots), the boot reaches milestone `audio` and stops at:
+2. `sceGnmValidateCommandBuffers`: the engine reads exactly `0x80d13fff` as "validation
+   unavailable" (`0x02abb950`); that code has no public name yet. The next GNM call after it,
+   `sceGnmDispatchInitDefaultHardwareState`, writes the GPU's own packets into the engine's
+   command buffer, so GNM is not answerable call by call: the engine builds its command buffers
+   itself and only submits them (map of all 50 imports on #39).
+3. The engine's renderer (its `GX` graphics framework), above where its command buffers are
+   built: the per-frame routine `0x025d5f80` (it submits at `0x025d861b`), the submit-and-flip
+   helpers `0x02ab0ce0` and `0x02ab0e30`, and the other submit clusters listed on #39. This is
+   where the graphics get rebuilt.
 
 Roadmap after the boot gets going: kernel, threads and memory; files; input; audio; video
 out; GNM and shaders (the largest). Claimable work per system call group is in the issues
@@ -35,7 +40,11 @@ and readable. Progress-branch functions without gameplay recordings remain `edge
 1. The live functions the 60 FPS patches edit besides frame timing (historical map: 47 live, 12 dead;
    `tools/patch_overlap.py ... --map`, `tools/reloc_refs.py`, `tools/refs_to.sh`). Done so far:
    the nine fixed-step state methods (Chalice Dungeon state machine; replaced, verified on edge
-   cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons).
+   cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons), and
+   five methods of SprjDungeonGateIns, which owns that state (two steps of its step machine and
+   three event handlers; edge-verified the same way). The owner's own small methods that 60 FPS++
+   edits (`0x01ea3fc0`, `0x01ea4040`, `0x01ea40e0`, `0x01ea54d0`, `0x01ea62e0`) are copies nothing
+   calls or points to (dead). The larger live ones near them are done too (see Done).
    Still to do among those called in the clinic (probe run 2026-10-06, `continue.route`):
    `0x02713870` (11.6 KB; replay the complete `Uncap FPS++` write order: a later live route
    bypasses an overlapping malformed call, QUIRKS.md). Each option part is checked against
@@ -94,6 +103,32 @@ and readable. Progress-branch functions without gameplay recordings remain `edge
 - `0x0111a760` frame_timing_get_monotonic_us: edge-verified (20 synthetic cases and five
   rejected mutations; independent static/readability review passed; gameplay recordings pending).
 
+- The Chalice Dungeon gate state's online methods (#186, #188, #192, #194, #196, #198, #199), all
+  edge-verified stock and against "60 FPS++" with an independent review each: the owner check
+  `0x01ea5280`, entry check `0x01ea4a10`, ritual handle and slot resets `0x01ea5670`/`0x01ea5850`,
+  readiness check `0x01ea5c90` with the pass-on twins `0x01ea5e20`/`0x01ea6080`, handle creation
+  `0x01ea47a0` and level creation `0x01ea4cb0` (event flags 6228..6287). Shared on the way: the
+  engine's reference counting (`game/engine/ref_object.h`, #185) and the event-flag store
+  (`game/event/flag_store.h`, #199). Drafts now decode the code Ghidra drops after the fatal error
+  call (`; GAP:`, #189).
+- `0x01ec3ef0`: a state method on the Chalice Dungeon gate behind a slot: leaves ritual and dungeon
+  modes (request 7) and the error mode (request 10) around the owner check `0x01ea5280`, true when
+  it says yes in the server dungeon mode: edge-verified (stock and against "60 FPS++").
+- Runtime, 2026-10-30/31 (#143-#180): direct and flexible memory with protection and virtual
+  queries; semaphores, condition variables (recursive waits), thread creation, priorities,
+  attributes and signal masks; thread handles below 2^40; the time of day, FreeBSD clocks and
+  process time; the console's start-up services (user, common dialog, language, app content,
+  content restriction); the network, SSL and HTTP libraries' offline start-up; audio (AJM start,
+  output ports, volume, real-time pacing, port state); /app0 and read-only file access; kernel
+  event queues; video out ports, buffers and hsync flips; the first GNM calls (tessellation
+  factor ring, compute queues). Generic input capture landed in #133-#135.
+
+- `0x01f03210`, `0x01f03680`, `0x0200f970`, `0x020118f0`: state methods that find the current
+  Chalice Dungeon gate through SprjHolygrail (event flags 9020..9026 pick it), advance it while
+  busy and report on its mode: edge-verified (stock and against "60 FPS++").
+- `0x01eb5390`, `0x01eb5490`, `0x01eb9020`, `0x01ebb090`, `0x01ebf060`: SprjDungeonGateIns
+  STEP_Init_forChannelLoad, STEP_ModeSwitch and the handlers of events 0, 1000 and 3000:
+  edge-verified (stock and against "60 FPS++"); waiting for a save that reaches the Chalice Dungeons.
 - Runtime: libkernel `sceKernelGetProcParam`, `_sceKernelRtldSetApplicationHeapAPI`, the mutex and mutex attribute functions (SCE and POSIX names), `scePthreadSelf` and thread attributes (init, destroy, get).
 - Runtime: the game's own libc and libSceFios2 modules are mapped as guest code (`game/modules.csv`) and the executable's imports they export are bound to them; their functions are tracked in `symbols/module_functions.csv`, replaceable later like game functions.
 - Runtime: our own loader (`runtime/loader.c`) and boot harness (`runtime/boot.c`, `tools/boot.py`); the verification harness maps the executable with the loader.
