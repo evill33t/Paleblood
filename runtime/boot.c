@@ -976,6 +976,7 @@ static const char *usage =
     "              [--system-module PATH=FILE | --start-system-module PATH=FILE]...\n"
     "              [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...\n"
     "              [--owned-process-data] [--owned-console] [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
+    "              [--guest-cpu-count N|host (Darwin only)]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
 static void console_cleanup(void)
@@ -985,14 +986,49 @@ static void console_cleanup(void)
         rt_fatal("owned console shutdown", rt_console_status_message(status));
 }
 
+#if defined(__APPLE__)
+/* Strict positive decimal slot count. This declares a guest topology, not native affinity. */
+static int parse_guest_cpu_count(const char *text, uint32_t *out)
+{
+    if (!text || !*text) return -1;
+    uint32_t value = 0;
+    for (const unsigned char *c = (const unsigned char *)text; *c; c++) {
+        if (*c < '0' || *c > '9') return -1;
+        const uint32_t digit = (uint32_t)(*c - '0');
+        if (value > (64u - digit) / 10u) return -1;
+        value = value * 10u + digit;
+    }
+    if (!value || value > 64) return -1;
+    *out = value;
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *game_library_path = NULL;
     int timeout = 30, trace = 0, list = 0, owned_process_data = 0, owned_console = 0;
+#if defined(__APPLE__)
+    const char *guest_cpu_argument = NULL;
+    uint32_t guest_cpu_count = 0;
+#endif
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--nids") && i + 1 < argc) nid_path = argv[++i];
         else if (!strcmp(argv[i], "--status") && i + 1 < argc) status_path = argv[++i];
         else if (!strcmp(argv[i], "--game-lib") && i + 1 < argc && !game_library_path) game_library_path = argv[++i];
+#if defined(__APPLE__)
+        else if (!strcmp(argv[i], "--guest-cpu-count")) {
+            if (guest_cpu_argument || i + 1 == argc) {
+                fputs("pbboot: --guest-cpu-count needs one N in 1..64 or host, once only\n", stderr);
+                return 2;
+            }
+            guest_cpu_argument = argv[++i];
+            if (strcmp(guest_cpu_argument, "host") && parse_guest_cpu_count(guest_cpu_argument, &guest_cpu_count)) {
+                fputs("pbboot: --guest-cpu-count needs one decimal N in 1..64 or host\n", stderr);
+                return 2;
+            }
+        }
+#endif
         else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--module") && i + 1 < argc && object_count && object_count < MAX_OBJECTS)
             objects[object_count++].path = argv[++i];
@@ -1174,6 +1210,27 @@ int main(int argc, char **argv)
         fprintf(stderr, "pbboot: %s\n", error);
         return 3;
     }
+#if defined(__APPLE__)
+    /* Resolve once, only for execution. Import listing performs no host count query. The
+       frozen logical domain never reinterprets BB_RUNTIME_CPU_MAP's native host-ID syntax. */
+    if (guest_cpu_argument) {
+        if (getenv("BB_RUNTIME_CPU_MAP")) {
+            fputs("pbboot: --guest-cpu-count cannot be combined with BB_RUNTIME_CPU_MAP\n", stderr);
+            return 2;
+        }
+        if (!strcmp(guest_cpu_argument, "host")) {
+            const rt_logical_cpu_result status = rt_logical_cpu_darwin_count(&guest_cpu_count);
+            if (status.status != RT_LOGICAL_CPU_OK) {
+                fprintf(stderr, "pbboot: --guest-cpu-count host: Darwin count query rejected (status %d, native error %d)\n",
+                        (int)status.status, status.native_error);
+                return 3;
+            }
+        }
+        fprintf(stderr, "pbboot: unpinned logical CPU slots 0..%u (count %u, source %s); native affinity unavailable\n",
+                guest_cpu_count - 1, guest_cpu_count, !strcmp(guest_cpu_argument, "host") ? "hw.logicalcpu snapshot" : "explicit configuration");
+    }
+#endif
+
     uint64_t proc_param_size;
     const uint64_t proc_param = rt_elf_proc_param(objects[0].elf, &proc_param_size);
     rt_process.image = objects[0].image;
@@ -1245,7 +1302,14 @@ int main(int argc, char **argv)
 
 #endif
 
-    rt_thread_register_main(stack, STACK_SIZE);
+#if defined(__APPLE__)
+    if (guest_cpu_argument) {
+        const rt_logical_cpu_result status = rt_thread_register_main_logical(stack, STACK_SIZE, guest_cpu_count);
+        if (status.status != RT_LOGICAL_CPU_OK)
+            rt_fatal("main-thread logical CPU policy", "cannot register the checked logical slots");
+    } else
+#endif
+        rt_thread_register_main(stack, STACK_SIZE);
     if (game_library_path) {
         /* Retain this library until process exit: installed jumps and optional probes refer to
            its code for the whole guest lifetime. Import listing returned before this point. */
