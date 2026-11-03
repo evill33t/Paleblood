@@ -86,6 +86,17 @@ static int32_t kernel_stat(const char *path, guest_stat *out)
     return 0;
 }
 
+/* Native timestamp member names differ; the guest wire and birth-time policy do not. */
+#if defined(__APPLE__) && defined(__MACH__)
+#define HOST_ATIME(st) ((st).st_atimespec)
+#define HOST_MTIME(st) ((st).st_mtimespec)
+#define HOST_CTIME(st) ((st).st_ctimespec)
+#else
+#define HOST_ATIME(st) ((st).st_atim)
+#define HOST_MTIME(st) ((st).st_mtim)
+#define HOST_CTIME(st) ((st).st_ctim)
+#endif
+
 static void fill_stat(guest_stat *out, const struct stat *host)
 {
     const struct stat st = *host;
@@ -94,13 +105,13 @@ static void fill_stat(guest_stat *out, const struct stat *host)
         .ino = (uint32_t)st.st_ino,
         .mode = (uint16_t)((st.st_mode & S_IFMT) | (st.st_mode & 0555)),
         .nlink = (uint16_t)st.st_nlink,
-        .atime = timespec_of(st.st_atim),
-        .mtime = timespec_of(st.st_mtim),
-        .ctime = timespec_of(st.st_ctim),
+        .atime = timespec_of(HOST_ATIME(st)),
+        .mtime = timespec_of(HOST_MTIME(st)),
+        .ctime = timespec_of(HOST_CTIME(st)),
         .size = st.st_size,
         .blocks = st.st_blocks,
         .blksize = (uint32_t)st.st_blksize,
-        .birthtime = timespec_of(st.st_mtim),
+        .birthtime = timespec_of(HOST_MTIME(st)),
     };
 }
 

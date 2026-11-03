@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+cmake_minimum_required(VERSION 3.20)
+project(paleblood_host_file_stat C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+add_compile_options(-Wall -Wextra -Werror)
+enable_testing()
+get_filename_component(PB_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+add_executable(test_host_file_stat "${PB_ROOT}/test/test_host_file_stat.c" "${PB_ROOT}/runtime/process.c" "${PB_ROOT}/runtime/syslib/table.c")
+target_include_directories(test_host_file_stat PRIVATE "${PB_ROOT}/runtime/include")
+add_test(NAME host_file_stat COMMAND test_host_file_stat)
