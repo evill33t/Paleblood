@@ -9,9 +9,13 @@
    know (one the system would supply) is not implemented, so the boot stops there by name instead of
    guessing. */
 #include "runtime/process.h"
+#include "runtime/memory.h"
 #include "runtime/syslib.h"
 
+#if !defined(__APPLE__)
 #include <asm/prctl.h>
+#include <sys/syscall.h>
+#endif
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -19,7 +23,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 
 enum { BSD_ENOMEM = 12, BSD_EINVAL = 22 };
@@ -107,8 +110,7 @@ static guest_thread *thread_object_new(const char *caller)
     pthread_mutex_lock(&thread_objects_lock);
     if (!thread_objects) {
         void *const want = (void *)(uintptr_t)THREAD_OBJECTS_BASE;
-        void *const got = mmap(want, THREAD_OBJECT_SLOTS * sizeof(guest_thread), PROT_READ | PROT_WRITE,
-                               MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        void *const got = rt_map_anonymous_at(want, THREAD_OBJECT_SLOTS * sizeof(guest_thread), PROT_READ | PROT_WRITE);
         if (got != want) rt_fatal(caller, "the host cannot reserve the thread objects' range below 2^40");
         thread_objects = got;
     }
@@ -121,6 +123,9 @@ static guest_thread *thread_object_new(const char *caller)
 static _Thread_local guest_thread *current;
 static rt_cpu_topology main_topology;
 static guest_thread *registered_main;
+static rt_logical_cpu_slots main_logical_slots;
+enum main_cpu_domain { MAIN_CPU_NONE, MAIN_CPU_NATIVE_ALLOWED, MAIN_CPU_LOGICAL_UNPINNED };
+static enum main_cpu_domain main_cpu_policy;
 
 /* Thread priorities. A PS4 executable may declare its main thread's settings in its process
    parameters (sceUserMainThreadPriority and the like, which homebrew titles define); without them
@@ -156,16 +161,37 @@ rt_cpu_status rt_thread_register_main_cpu(void *stack, uint64_t stack_size, rt_c
     thread->stack_size = stack_size;
     thread->priority = main_thread_priority();
     main_topology = topology;
+    main_cpu_policy = MAIN_CPU_NATIVE_ALLOWED;
     registered_main = thread;
     current = thread;
     return RT_CPU_OK;
 }
 
+rt_logical_cpu_result rt_thread_register_main_logical(void *stack, uint64_t stack_size, uint64_t count)
+{
+    if (registered_main) return (rt_logical_cpu_result){RT_LOGICAL_CPU_INVALID_STATE, 0};
+    rt_logical_cpu_slots slots;
+    const rt_logical_cpu_result status = rt_logical_cpu_slots_init(count, &slots);
+    if (status.status != RT_LOGICAL_CPU_OK) return status;
+    guest_thread *const thread = current ? current : thread_object_new("the main thread");
+    thread->stack = stack; thread->stack_size = stack_size; thread->priority = main_thread_priority();
+    main_logical_slots = slots; main_cpu_policy = MAIN_CPU_LOGICAL_UNPINNED;
+    registered_main = current = thread;
+    return status;
+}
+
 void rt_thread_register_main(void *stack, uint64_t stack_size)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    if (registered_main) rt_fatal("the main thread", "a main thread is already registered");
+    guest_thread *const thread = current ? current : thread_object_new("the main thread");
+    thread->stack = stack; thread->stack_size = stack_size; thread->priority = main_thread_priority();
+    registered_main = current = thread;
+#else
     const rt_cpu_status status = rt_thread_register_main_cpu(stack, stack_size, rt_cpu_query_native,
                                                             NULL, getenv("BB_RUNTIME_CPU_MAP"));
     if (status != RT_CPU_OK) rt_fatal("main-thread CPU topology", rt_cpu_status_message(status));
+#endif
 }
 
 /* The calling thread's own variable value, under either name; it has no error return (POSIX
@@ -233,6 +259,7 @@ static int attr_destroy(guest_attr **attr)
 
 /* Calls entry(argument) on the guest stack, with the System V convention the guest uses, and returns
    its result: rt_thread_call(entry, argument, stack_top). */
+#if !defined(__APPLE__)
 void *rt_thread_call(void *(*entry)(void *), void *argument, void *stack_top);
 __asm__(".text\n"
         ".globl rt_thread_call\n"
@@ -268,6 +295,8 @@ static void *thread_start(void *raw)
     return NULL;
 }
 
+#endif
+
 /* scePthreadCreate(thread, attr, entry, argument, name), as the executable's thread wrapper calls
    it: an attribute with a stack size and a detach state, a name. The guest runs on a host thread
    with its own guest stack and TLS block. What the runtime does not know stops by name: a missing
@@ -277,6 +306,10 @@ static void *thread_start(void *raw)
 static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument,
                          const char *name)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    (void)thread; (void)attr; (void)entry; (void)argument; (void)name;
+    rt_fatal("scePthreadCreate", "Darwin guest-worker TLS qualification is unsupported");
+#else
     static const char fn[] = "scePthreadCreate";
     if (!thread || !entry) rt_fatal(fn, "no thread variable or entry: the error value is not established");
     const guest_attr *a = attr ? *attr : NULL;
@@ -304,6 +337,7 @@ static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry
     if (r) rt_fatal(fn, "the host could not create the thread");
     *thread = t;
     return 0;
+#endif
 }
 
 /* The CPU set a thread may run on. The executable sets it once, right after creating the thread,
@@ -331,8 +365,13 @@ static int attr_get(guest_thread *thread, guest_attr **attr)
     uint64_t affinity = thread->affinity;
     int has_affinity = affinity != 0;
     if (thread == registered_main && current == registered_main) {
-        const rt_cpu_status status = rt_cpu_topology_read(&main_topology, &affinity);
-        if (status != RT_CPU_OK) rt_fatal("scePthreadAttrGet", rt_cpu_status_message(status));
+        if (main_cpu_policy == MAIN_CPU_LOGICAL_UNPINNED) {
+            if (rt_logical_cpu_slots_read(&main_logical_slots, &affinity).status != RT_LOGICAL_CPU_OK)
+                rt_fatal("scePthreadAttrGet", "the owned logical CPU-slot policy is invalid");
+        } else if (main_cpu_policy == MAIN_CPU_NATIVE_ALLOWED) {
+            const rt_cpu_status status = rt_cpu_topology_read(&main_topology, &affinity);
+            if (status != RT_CPU_OK) rt_fatal("scePthreadAttrGet", rt_cpu_status_message(status));
+        } else rt_fatal("scePthreadAttrGet", "Darwin native CPU affinity backend is unsupported");
         has_affinity = 1;
     }
     **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size,
@@ -423,7 +462,11 @@ RT_SYSLIB("libkernel", scePthreadAttrGet, attr_get);
 RT_SYSLIB("libkernel", scePthreadAttrSetdetachstate, sce_attr_set_detach_state);
 RT_SYSLIB("libkernel", scePthreadAttrSetstacksize, sce_attr_set_stack_size);
 RT_SYSLIB("libkernel", scePthreadAttrSetschedpolicy, sce_attr_set_sched_policy);
+#if defined(__APPLE__) && defined(__MACH__)
+RT_SYSLIB_UNRESOLVED("libkernel", scePthreadCreate, create_thread);
+#else
 RT_SYSLIB("libkernel", scePthreadCreate, create_thread);
+#endif
 RT_SYSLIB("libkernel", scePthreadSetaffinity, set_affinity);
 
 /* libScePosix: the same calls under their POSIX names, returning the errno values themselves.
