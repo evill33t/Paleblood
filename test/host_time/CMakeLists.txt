@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+cmake_minimum_required(VERSION 3.20)
+project(paleblood_host_time C)
+set(CMAKE_C_STANDARD 11)
+add_compile_options(-Wall -Wextra -Werror)
+enable_testing()
+get_filename_component(PB_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+add_executable(test_host_time "${PB_ROOT}/test/test_host_time.c" "${PB_ROOT}/runtime/host_time.c")
+target_include_directories(test_host_time PRIVATE "${PB_ROOT}/runtime/include")
+add_test(NAME host_time COMMAND test_host_time)

@@ -18,6 +18,7 @@
    output calls, which stop by name until they are implemented. What is not established stops by
    name: any open other than the observed ones, and running out of handles. */
 #include "runtime/process.h"
+#include "runtime/host_time.h"
 #include "runtime/syslib.h"
 
 #include <pthread.h>
@@ -117,10 +118,12 @@ static int32_t audio_out_output(int32_t handle, const void *samples)
     const int64_t block = (int64_t)port->length * NANOSECONDS_PER_SECOND / port->rate;
     pthread_mutex_lock(&port->lock);
     struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) rt_fatal(fn, "cannot read the host monotonic clock");
     int64_t wait_until = nanoseconds(&port->played);
-    if (wait_until > nanoseconds(&now))
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &port->played, NULL);
+    if (wait_until > nanoseconds(&now)) {
+        if (rt_host_sleep_until_monotonic(&port->played))
+            rt_fatal(fn, "cannot wait for the host monotonic audio deadline");
+    }
     else
         wait_until = nanoseconds(&now); /* idle or behind: this block starts now */
     const int64_t done = wait_until + block;
