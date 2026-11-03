@@ -178,3 +178,7 @@ add_test(NAME host_file_stat COMMAND test_host_file_stat)
 add_executable(test_host_time test/test_host_time.c runtime/host_time.c)
 target_include_directories(test_host_time PRIVATE runtime/include)
 add_test(NAME host_time COMMAND test_host_time)
+
+add_executable(test_host_mutex test/test_host_mutex.c runtime/process.c runtime/syslib/table.c)
+target_include_directories(test_host_mutex PRIVATE runtime/include)
+add_test(NAME host_mutex COMMAND test_host_mutex)
