@@ -182,3 +182,7 @@ add_test(NAME host_time COMMAND test_host_time)
 add_executable(test_host_mutex test/test_host_mutex.c runtime/process.c runtime/syslib/table.c)
 target_include_directories(test_host_mutex PRIVATE runtime/include)
 add_test(NAME host_mutex COMMAND test_host_mutex)
+
+add_executable(test_host_memory test/test_host_memory.c runtime/process.c runtime/syslib/table.c)
+target_include_directories(test_host_memory PRIVATE runtime/include)
+add_test(NAME host_memory COMMAND test_host_memory)
