@@ -10,22 +10,33 @@ static int ready;
 static void *notify(void *unused)
 {
     (void)unused;
-    if (mutex_lock(&mutex)) return (void *)1;
+    if (mutex_lock("host test", &mutex)) return (void *)1;
     ready = 1;
     if (cond_signal(&condition) || mutex_unlock(&mutex)) return (void *)1;
+    return NULL;
+}
+static void *unlock_without_ownership(void *result)
+{
+    *(int *)result = mutex_unlock(&mutex);
     return NULL;
 }
 int main(void)
 {
     for (int type = TYPE_ERRORCHECK; type <= TYPE_NORMAL; type++) {
         CHECK(mutex_create(&mutex, type, 0) == 0);
-        CHECK(mutex_lock(&mutex) == 0);
-        if (type == TYPE_RECURSIVE) { CHECK(mutex_lock(&mutex) == 0); CHECK(mutex_unlock(&mutex) == 0); }
+        CHECK(mutex_unlock(&mutex) == BSD_EPERM);
+        CHECK(mutex_lock("host test", &mutex) == 0);
+        pthread_t other; int result = 0;
+        CHECK(pthread_create(&other, NULL, unlock_without_ownership, &result) == 0);
+        CHECK(pthread_join(other, NULL) == 0 && result == BSD_EPERM);
+        CHECK(mutex_trylock(&mutex) == (type == TYPE_RECURSIVE ? 0 : BSD_EBUSY));
+        if (type == TYPE_RECURSIVE) CHECK(mutex_unlock(&mutex) == 0);
+        if (type == TYPE_RECURSIVE) { CHECK(mutex_lock("host test", &mutex) == 0); CHECK(mutex_unlock(&mutex) == 0); }
         CHECK(mutex_unlock(&mutex) == 0); CHECK(mutex_destroy(&mutex) == 0);
     }
     CHECK(mutex_create(&mutex, TYPE_RECURSIVE, 0) == 0);
     CHECK(cond_create(&condition) == 0);
-    CHECK(mutex_lock(&mutex) == 0); CHECK(mutex_lock(&mutex) == 0);
+    CHECK(mutex_lock("host test", &mutex) == 0); CHECK(mutex_lock("host test", &mutex) == 0);
     pthread_t worker; CHECK(pthread_create(&worker, NULL, notify, NULL) == 0);
     while (!ready) CHECK(cond_wait(&condition, &mutex, NULL) == 0);
     CHECK(mutex->depth == 2);
@@ -45,6 +56,6 @@ int main(void)
     CHECK(waitpid(child, &status, 0) == child); CHECK(WIFSIGNALED(status));
 #endif
     CHECK(cond_destroy(&condition) == 0); CHECK(mutex_destroy(&mutex) == 0);
-    puts("host mutex: all supported types and recursive untimed condition ownership passed");
+    puts("host mutex: supported types, foreign-owner rejection and recursive condition ownership passed");
     return 0;
 }
