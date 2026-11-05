@@ -3,6 +3,7 @@
 #include "runtime/process_data.h"
 #include "runtime/syslib.h"
 #include <stdatomic.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,8 +21,34 @@ static _Alignas(16) unsigned char guest_guard[64];
 static uint32_t guest_interrupt_preferences[4];
 enum { UNREADY, READY, PREPARING };
 static atomic_int state;
+static int32_t process_identity; /* Immutable after the READY release. */
 
-int rt_process_data_ready(void) { return atomic_load_explicit(&state, memory_order_acquire) == READY; }
+static int host_identity(int32_t *out)
+{
+    const int saved = errno;
+    const pid_t pid = getpid();
+    errno = saved;
+    if (pid <= 0 || (uintmax_t)pid > INT32_MAX) return 0;
+    *out = (int32_t)pid;
+    return 1;
+}
+static rt_process_data_status identity_status(int32_t *out)
+{
+    const int current = atomic_load_explicit(&state, memory_order_acquire);
+    if (current != READY)
+        return current == PREPARING ? RT_PROCESS_DATA_BUSY : RT_PROCESS_DATA_NOT_READY;
+    int32_t actual;
+    if (!host_identity(&actual)) return RT_PROCESS_DATA_HOST_PID;
+    if (actual != process_identity) return RT_PROCESS_DATA_INHERITED;
+    if (out) *out = process_identity;
+    return RT_PROCESS_DATA_OK;
+}
+rt_process_data_status rt_process_data_pid(int32_t *out)
+{
+    return out ? identity_status(out) : RT_PROCESS_DATA_INVALID;
+}
+
+int rt_process_data_ready(void) { return identity_status(NULL) == RT_PROCESS_DATA_OK; }
 void *rt_process_data_parameters(void) { return rt_process_data_ready() ? parameters : NULL; }
 
 static int string_sizes(size_t count, const char *const *strings, size_t *bytes)
@@ -42,13 +69,18 @@ rt_process_data_status rt_process_data_prepare(size_t argc, const char *const *a
 {
     int expected = UNREADY;
     if (!atomic_compare_exchange_strong_explicit(&state, &expected, PREPARING,
-                                                 memory_order_acq_rel, memory_order_acquire))
-        return expected == READY ? RT_PROCESS_DATA_ALREADY_PREPARED : RT_PROCESS_DATA_BUSY;
+                                                 memory_order_acq_rel, memory_order_acquire)) {
+        if (expected != READY) return RT_PROCESS_DATA_BUSY;
+        const rt_process_data_status identity = identity_status(NULL);
+        return identity == RT_PROCESS_DATA_OK ? RT_PROCESS_DATA_ALREADY_PREPARED : identity;
+    }
     rt_process_data_status result = RT_PROCESS_DATA_INVALID;
     size_t bytes = 0;
     struct process_parameters *prepared = NULL;
+    int32_t prepared_identity;
     if (argc > RT_PROCESS_MAX_ARGS || envc > RT_PROCESS_MAX_ENV
         || !string_sizes(argc, argv, &bytes) || !string_sizes(envc, env, &bytes)) goto failed;
+    if (!host_identity(&prepared_identity)) { result = RT_PROCESS_DATA_HOST_PID; goto failed; }
     const size_t vector_bytes = (argc + envc + 2) * sizeof(char *);
     prepared = malloc(sizeof *prepared + vector_bytes + bytes);
     if (!prepared) { result = RT_PROCESS_DATA_NO_MEMORY; goto failed; }
@@ -84,6 +116,7 @@ rt_process_data_status rt_process_data_prepare(size_t argc, const char *const *a
     guest_program_name = program;
     memcpy(guest_guard, guard, sizeof guard);
     memset(guest_interrupt_preferences, 0, sizeof guest_interrupt_preferences);
+    process_identity = prepared_identity;
     atomic_store_explicit(&state, READY, memory_order_release);
     return RT_PROCESS_DATA_OK;
 failed:
@@ -100,6 +133,9 @@ const char *rt_process_data_status_message(rt_process_data_status status)
     case RT_PROCESS_DATA_ENTROPY: return "host entropy failed or produced a zero guard sentinel";
     case RT_PROCESS_DATA_BUSY: return "owned process preparation is already in progress";
     case RT_PROCESS_DATA_ALREADY_PREPARED: return "owned process data is already prepared";
+    case RT_PROCESS_DATA_HOST_PID: return "host process ID is not a positive int32 value";
+    case RT_PROCESS_DATA_NOT_READY: return "enable --owned-process-data before guest execution";
+    case RT_PROCESS_DATA_INHERITED: return "host-fork inherited owned process data is unsupported; no reset/rebind";
     }
     return "unknown owned process data status";
 }
