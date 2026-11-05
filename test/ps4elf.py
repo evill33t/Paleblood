@@ -17,7 +17,9 @@ def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), 
     relocations / jump_slots: (target, type, symbol index (1-based, 0 for none), addend);
     libraries: (DT_SCE_IMPORT_LIB or DT_SCE_EXPORT_LIB, name, id).
     relro_segments: separate SCE RELRO allocations, using the same tuple as segments.
-    Symbol tuples may append a declared size. elf_type selects the fixture header type.
+    Symbol tuples may append size, binding, complete st_other, and section index, in that order.
+    Defaults remain size 0, global binding 1, other 0, and section 0 for an undefined value
+    or section 1 for a defined value. elf_type selects the fixture header type.
     tls: optional (vaddr, filesz, memsz, alignment), aliasing a segment's file bytes."""
     strtab = b'\0'
     library_tags = []
@@ -27,8 +29,11 @@ def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), 
     syms = struct.pack('<IBBHQQ', 0, 0, 0, 0, 0, 0)
     for symbol in symbols:
         name, stype, value = symbol[:3]
-        symbol_size = symbol[3] if len(symbol) == 4 else 0
-        syms += struct.pack('<IBBHQQ', len(strtab), (1 << 4) | stype, 0, 0 if value is None else 1, value or 0, symbol_size)
+        symbol_size = symbol[3] if len(symbol) >= 4 else 0
+        binding = symbol[4] if len(symbol) >= 5 else 1
+        other = symbol[5] if len(symbol) >= 6 else 0
+        section = symbol[6] if len(symbol) >= 7 else (0 if value is None else 1)
+        syms += struct.pack('<IBBHQQ', len(strtab), (binding << 4) | stype, other, section, value or 0, symbol_size)
         strtab += name.encode() + b'\0'
     rela = b''.join(struct.pack('<QQq', t, (s << 32) | ty, a) for t, ty, s, a in relocations)
     jmprel = b''.join(struct.pack('<QQq', t, (s << 32) | ty, a) for t, ty, s, a in jump_slots)
