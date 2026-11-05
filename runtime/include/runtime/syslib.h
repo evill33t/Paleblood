@@ -30,6 +30,17 @@ typedef struct {
     rt_syslib_capability capability;
 } rt_syslib_entry;
 
+/* Backed data has its own typed registry. Records name stable writable storage,
+   never a function address or an automatically invented per-import zero page.
+   Registration must be justified by a documented object/value/lifetime policy. */
+typedef struct {
+    const char *library, *symbol;
+    void *address;
+    size_t size;
+} rt_syslib_data;
+const rt_syslib_data *rt_syslib_data_begin(void);
+const rt_syslib_data *rt_syslib_data_end(void);
+
 /* All entries, from every group (gathered by the linker; see RT_SYSLIB and RT_SYSLIB_UNRESOLVED). */
 const rt_syslib_entry *rt_syslib_begin(void);
 const rt_syslib_entry *rt_syslib_end(void);
@@ -55,6 +66,16 @@ const rt_syslib_entry *rt_syslib_end(void);
 #define RT_SYSLIB_UNRESOLVED(library, symbol, fn) \
     RT_SYSLIB_REGISTER(RT_SYSLIB_CAT(rt_syslib_unresolved_entry_, __LINE__), library, symbol, fn, \
                        RT_SYSLIB_CAPABILITY_UNRESOLVED)
+
+#if defined(__APPLE__) && defined(__MACH__)
+#define RT_SYSLIB_DATA_SECTION "__DATA,rt_sysdata"
+#else
+#define RT_SYSLIB_DATA_SECTION "rt_sysdata"
+#endif
+#define RT_SYSLIB_DATA(library, symbol, object) \
+    __attribute__((used, section(RT_SYSLIB_DATA_SECTION), aligned(sizeof(void *)))) \
+    static const rt_syslib_data RT_SYSLIB_CAT(rt_syslib_data_, __LINE__) = \
+        {library, #symbol, (void *)&(object), sizeof(object)}
 
 #ifdef __cplusplus
 }

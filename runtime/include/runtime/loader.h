@@ -37,7 +37,7 @@ typedef struct {
     uint64_t vaddr, filesz, memsz, align;
 } rt_elf_tls;
 
-enum { RT_ELF_IMPORT_FUNCTION = 0, RT_ELF_IMPORT_DATA = 1 };
+enum { RT_ELF_IMPORT_FUNCTION = 0, RT_ELF_IMPORT_DATA = 1, RT_ELF_IMPORT_OTHER = 2 };
 
 /* Returns the host address an import is bound to: a function's entry, or an object's storage. */
 typedef uint64_t (*rt_elf_bind_fn)(void *user, size_t import_index, int kind);
@@ -48,6 +48,13 @@ void rt_elf_close(rt_elf *elf);
 
 uint64_t rt_elf_image_size(const rt_elf *elf);   /* bytes from the image start to the end of the last segment */
 uint64_t rt_elf_entry(const rt_elf *elf);
+/* Managed startup admission, separate from legacy generic mapping. */
+int rt_elf_is_amd64_sce_module(const rt_elf *elf);
+int rt_elf_executable_bytes(const rt_elf *elf, uint64_t offset, uint64_t size);
+int rt_elf_allocated_bytes(const rt_elf *elf, uint64_t offset, uint64_t size);
+/* Bounded host profile: declared object size and each relocation addend must fit
+   the real provider object, permitting a one-past pointer but no negative addend. */
+int rt_elf_import_data_fits(const rt_elf *elf, size_t index, uint64_t extent);
 const rt_elf_tls *rt_elf_tls_segment(const rt_elf *elf);
 /* The process parameter block (PT_SCE_PROCPARAM): its offset in the image, and its size in *size;
    0 and 0 when the executable has none. */
@@ -60,6 +67,8 @@ size_t rt_elf_relocation_count(const rt_elf *elf);
 size_t rt_elf_import_count(const rt_elf *elf);
 const char *rt_elf_import_name(const rt_elf *elf, size_t index);
 int rt_elf_import_kind(const rt_elf *elf, size_t index);
+uint64_t rt_elf_import_size(const rt_elf *elf, size_t index);
+int rt_elf_import_has_function_addend(const rt_elf *elf, size_t index);
 /* The library an import comes from ("libkernel", "libc", ...), or NULL if not named. */
 const char *rt_elf_import_library(const rt_elf *elf, size_t index);
 

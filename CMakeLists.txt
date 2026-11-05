@@ -81,7 +81,7 @@ set_tests_properties(capture_poc_replay PROPERTIES
 # System library implementations, compiled in directly so the linker keeps every RT_SYSLIB entry
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
 # The syslib tests use the display's headless mode only, so they build without its window.
-add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB}
+add_executable(test_syslib test/test_syslib.c runtime/process.c runtime/module.c ${PB_TEST_SYSLIB}
                runtime/display/display.c runtime/display/display_window_none.c)
 target_include_directories(test_syslib PRIVATE runtime/include)
 add_test(NAME syslib COMMAND test_syslib)
@@ -156,4 +156,15 @@ set_tests_properties(module_tls PROPERTIES TIMEOUT 10)
 add_test(NAME module_tls_boot
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
 set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
+    ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
+
+add_executable(test_module test/test_module.c runtime/module.c
+               runtime/syslib/kernel_module.c runtime/syslib/table.c)
+target_include_directories(test_module PRIVATE runtime/include)
+target_link_libraries(test_module PRIVATE Threads::Threads)
+add_test(NAME module_start COMMAND test_module)
+set_tests_properties(module_start PROPERTIES TIMEOUT 10)
+add_test(NAME module_start_boot
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_boot.py -v)
+set_tests_properties(module_start_boot PROPERTIES TIMEOUT 45
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
