@@ -51,6 +51,7 @@
 #include "runtime/nid.h"
 #include "runtime/process.h"
 #include "runtime/process_data.h"
+#include "runtime/console.h"
 #include "runtime/syslib.h"
 
 #include <asm/prctl.h>
@@ -869,13 +870,20 @@ static const char *usage =
     "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--display none|headless|window] [--display-capture DIR] [--nids NID_DB.xml]\n"
     "              [--system-module PATH=FILE | --start-system-module PATH=FILE]...\n"
     "              [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...\n"
-    "              [--owned-process-data] [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
+    "              [--owned-process-data] [--owned-console] [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
+
+static void console_cleanup(void)
+{
+    const rt_console_status status = rt_console_shutdown();
+    if (status != RT_CONSOLE_OK)
+        rt_fatal("owned console shutdown", rt_console_status_message(status));
+}
 
 int main(int argc, char **argv)
 {
     const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL, *game_library_path = NULL;
-    int timeout = 30, trace = 0, list = 0, owned_process_data = 0;
+    int timeout = 30, trace = 0, list = 0, owned_process_data = 0, owned_console = 0;
     rt_display_mode display_mode = RT_DISPLAY_NONE;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--nids") && i + 1 < argc) nid_path = argv[++i];
@@ -931,6 +939,7 @@ int main(int argc, char **argv)
             }
         }
         else if (!strcmp(argv[i], "--owned-process-data")) owned_process_data = 1;
+        else if (!strcmp(argv[i], "--owned-console")) owned_console = 1;
         else if (!strcmp(argv[i], "--module-hook") && i + 1 < argc) {
             const int added = add_module_hook(argv[++i]);
             if (added == -2) {
@@ -1031,6 +1040,20 @@ int main(int argc, char **argv)
             }
         }
         return 0;
+    }
+
+    /* Metadata-only listing returned before acquiring an owned output endpoint. */
+    if (owned_console) {
+        const rt_console_status status = rt_console_prepare(STDOUT_FILENO);
+        if (status != RT_CONSOLE_OK) {
+            fprintf(stderr, "pbboot: owned console: %s\n", rt_console_status_message(status));
+            return 3;
+        }
+        if (atexit(console_cleanup)) {
+            console_cleanup();
+            fputs("pbboot: cannot register owned console cleanup\n", stderr);
+            return 3;
+        }
     }
 
     /* Memory: each object's image, its trampolines and data imports; the guest stack and TLS. */
@@ -1348,6 +1371,7 @@ int main(int argc, char **argv)
         module_context = NULL;
     }
     module_tls_cleanup();
+    console_cleanup();
     free(db);
     free(db_text);
     return 0;
