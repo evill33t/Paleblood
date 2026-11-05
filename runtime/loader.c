@@ -31,6 +31,8 @@
 #define R_X86_64_JUMP_SLOT 7
 #define R_X86_64_RELATIVE 8
 #define R_X86_64_DTPMOD64 16
+#define STB_GLOBAL 1
+#define STB_WEAK 2
 #define STT_OBJECT 1
 #define STT_FUNC 2
 
@@ -47,6 +49,7 @@ typedef struct {
     char *name;
     int kind, function_addend;
     uint64_t size;
+    rt_elf_symbol symbol;
 } import;
 
 struct rt_elf {
@@ -65,7 +68,7 @@ struct rt_elf {
     size_t import_count, import_capacity;
     struct { unsigned id; int exported; char *name; } libraries[128];
     size_t library_count;
-    struct { char *name; uint64_t value, size; int kind; } *exports;
+    struct { char *name; uint64_t value, size; int kind; rt_elf_symbol symbol; } *exports;
     size_t export_count;
     uint64_t tls_module_id;
 };
@@ -99,11 +102,15 @@ static int symbol_kind(unsigned type)
          : type == STT_FUNC ? RT_ELF_IMPORT_FUNCTION : RT_ELF_IMPORT_OTHER;
 }
 
-static long import_index(rt_elf *e, const char *name, int kind, uint64_t size, int64_t addend)
+static long import_index(rt_elf *e, const char *name, rt_elf_symbol symbol, uint64_t size, int64_t addend)
 {
+    const int kind = symbol_kind(symbol.type);
     for (size_t i = 0; i < e->import_count; i++)
-        if (!strcmp(e->imports[i].name, name)) {
-            if (e->imports[i].kind != kind) return -1;
+        if (!strcmp(e->imports[i].name, name)
+            && e->imports[i].symbol.binding == symbol.binding
+            && e->imports[i].symbol.type == symbol.type
+            && e->imports[i].symbol.other == symbol.other
+            && e->imports[i].symbol.section == symbol.section) {
             if (kind == RT_ELF_IMPORT_FUNCTION && addend) e->imports[i].function_addend = 1;
             if (size > e->imports[i].size) e->imports[i].size = size;
             return (long)i;
@@ -119,6 +126,7 @@ static long import_index(rt_elf *e, const char *name, int kind, uint64_t size, i
     e->imports[e->import_count].kind = kind;
     e->imports[e->import_count].function_addend = kind == RT_ELF_IMPORT_FUNCTION && addend != 0;
     e->imports[e->import_count].size = size;
+    e->imports[e->import_count].symbol = symbol;
     if (!e->imports[e->import_count].name) return -1;
     return (long)e->import_count++;
 }
@@ -336,15 +344,15 @@ rt_elf *rt_elf_open(const char *path, char *error, size_t error_size)
                         fail(error, error_size, "%s: bad symbol name for relocation at %#llx", path, (unsigned long long)target);
                         goto out;
                     }
-                    const int kind = symbol_kind(info8 & 0xf);
-                    const long index = import_index(e, (const char *)d + strtab + name, kind, u64(s + 16), extra);
+                    const rt_elf_symbol symbol = {info8 >> 4, info8 & 0xf, s[5], shndx};
+                    const long index = import_index(e, (const char *)d + strtab + name, symbol, u64(s + 16), extra);
                     if (index < 0) {
                         fail(error, error_size, "%s: cannot record consistent import declarations", path);
                         goto out;
                     }
                     out.kind = KIND_IMPORT;
                     out.value = (uint64_t)index;
-                    out.addend = kind == RT_ELF_IMPORT_DATA ? extra : 0;
+                    out.addend = extra;
                 }
             } else {
                 fail(error, error_size, "%s: relocation type %u at %#llx is not handled", path, type,
@@ -357,22 +365,26 @@ rt_elf *rt_elf_open(const char *path, char *error, size_t error_size)
             }
             e->relocs[e->reloc_count++] = out;
         }
-    /* Exports: defined global or weak symbols named "NID#library#module" */
+    /* Catalogue all defined global/weak symbols. Raw type/section/visibility are metadata,
+       not a promise that a symbol is an externally bindable image address. */
     e->exports = calloc(symbols ? symbols : 1, sizeof *e->exports);
     if (!e->exports) goto out;
     for (size_t i = 1; i < symbols; i++) {
         const unsigned char *s = d + symtab + 24ull * i;
         const uint32_t name = u32(s);
         const uint8_t bind = s[4] >> 4;
-        if (!u16(s + 6) || (bind != 1 && bind != 2) || name >= strsz || !memchr(d + strtab + name, 0, strsz - name))
-            continue;
+        if (!u16(s + 6) || (bind != STB_GLOBAL && bind != STB_WEAK)) continue;
+        if (name >= strsz || !memchr(d + strtab + name, 0, strsz - name)) {
+            fail(error, error_size, "%s: invalid exported symbol name", path);
+            goto out;
+        }
         const char *n = (const char *)d + strtab + name;
-        if (!strchr(n, '#')) continue;
         e->exports[e->export_count].name = strdup(n);
         if (!e->exports[e->export_count].name) goto out;
         e->exports[e->export_count].value = u64(s + 8);
         e->exports[e->export_count].size = u64(s + 16);
         e->exports[e->export_count].kind = symbol_kind(s[4] & 0xf);
+        e->exports[e->export_count].symbol = (rt_elf_symbol){bind, s[4] & 0xf, s[5], u16(s + 6)};
         e->export_count++;
     }
     e->tls_module_id = 1;
@@ -445,6 +457,10 @@ size_t rt_elf_relocation_count(const rt_elf *e) { return e->reloc_count; }
 size_t rt_elf_import_count(const rt_elf *e) { return e->import_count; }
 const char *rt_elf_import_name(const rt_elf *e, size_t i) { return i < e->import_count ? e->imports[i].name : NULL; }
 int rt_elf_import_kind(const rt_elf *e, size_t i) { return i < e->import_count ? e->imports[i].kind : -1; }
+const rt_elf_symbol *rt_elf_import_symbol(const rt_elf *e, size_t i)
+{
+    return i < e->import_count ? &e->imports[i].symbol : NULL;
+}
 uint64_t rt_elf_import_size(const rt_elf *e, size_t i) { return i < e->import_count ? e->imports[i].size : 0; }
 int rt_elf_import_has_function_addend(const rt_elf *e, size_t i)
 {
@@ -483,6 +499,10 @@ const char *rt_elf_export_library(const rt_elf *e, size_t i)
 uint64_t rt_elf_export_value(const rt_elf *e, size_t i) { return i < e->export_count ? e->exports[i].value : 0; }
 uint64_t rt_elf_export_size(const rt_elf *e, size_t i) { return i < e->export_count ? e->exports[i].size : 0; }
 int rt_elf_export_kind(const rt_elf *e, size_t i) { return i < e->export_count ? e->exports[i].kind : -1; }
+const rt_elf_symbol *rt_elf_export_symbol(const rt_elf *e, size_t i)
+{
+    return i < e->export_count ? &e->exports[i].symbol : NULL;
+}
 void rt_elf_set_tls_module_id(rt_elf *e, uint64_t id) { e->tls_module_id = id; }
 
 int rt_elf_map(const rt_elf *e, void *base, rt_elf_bind_fn bind, void *user, char *error, size_t error_size)
@@ -498,7 +518,7 @@ int rt_elf_map(const rt_elf *e, void *base, rt_elf_bind_fn bind, void *user, cha
     }
     for (size_t i = 0; i < e->import_count; i++) {
         bound[i] = bind(user, i, e->imports[i].kind);
-        if (!bound[i]) {
+        if (!bound[i] && !rt_elf_symbol_can_be_null(&e->imports[i].symbol)) {
             fail(error, error_size, "import %s was not bound", e->imports[i].name);
             free(bound);
             return -1;
