@@ -12,11 +12,12 @@ PT_SCE_RELRO = 0x61000010
 DT_SCE_EXPORT_LIB, DT_SCE_IMPORT_LIB = 0x61000013, 0x61000015
 
 
-def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), relro_segments=(), tls=None):
+def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), relro_segments=(), tls=None, elf_type=0xfe10):
     """segments: (vaddr, bytes, memsz, flags); symbols: (name, type, defined_value or None);
     relocations / jump_slots: (target, type, symbol index (1-based, 0 for none), addend);
     libraries: (DT_SCE_IMPORT_LIB or DT_SCE_EXPORT_LIB, name, id).
     relro_segments: separate SCE RELRO allocations, using the same tuple as segments.
+    Symbol tuples may append a declared size. elf_type selects the fixture header type.
     tls: optional (vaddr, filesz, memsz, alignment), aliasing a segment's file bytes."""
     strtab = b'\0'
     library_tags = []
@@ -24,8 +25,10 @@ def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), 
         library_tags.append((tag, (ident << 48) | (1 << 32) | len(strtab)))
         strtab += name.encode() + b'\0'
     syms = struct.pack('<IBBHQQ', 0, 0, 0, 0, 0, 0)
-    for name, stype, value in symbols:
-        syms += struct.pack('<IBBHQQ', len(strtab), (1 << 4) | stype, 0, 0 if value is None else 1, value or 0, 0)
+    for symbol in symbols:
+        name, stype, value = symbol[:3]
+        symbol_size = symbol[3] if len(symbol) == 4 else 0
+        syms += struct.pack('<IBBHQQ', len(strtab), (1 << 4) | stype, 0, 0 if value is None else 1, value or 0, symbol_size)
         strtab += name.encode() + b'\0'
     rela = b''.join(struct.pack('<QQq', t, (s << 32) | ty, a) for t, ty, s, a in relocations)
     jmprel = b''.join(struct.pack('<QQq', t, (s << 32) | ty, a) for t, ty, s, a in jump_slots)
@@ -59,7 +62,7 @@ def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), 
     phdrs.append((0x61000000, 4, offset + len(body), 0, len(dynlib), 0, 0x10))
     body += dynlib
     header = b'\x7fELF' + bytes([2, 1, 1, 9]) + bytes(8)
-    header += struct.pack('<HHIQQQIHHHHHH', 0xfe10, 62, 1, entry, 64, 0, 0, 64, 56, nph, 64, 0, 0)
+    header += struct.pack('<HHIQQQIHHHHHH', elf_type, 62, 1, entry, 64, 0, 0, 64, 56, nph, 64, 0, 0)
     # type, flags, offset, vaddr, paddr, filesz, memsz, align
     ph = b''.join(struct.pack('<IIQQQQQQ', t, fl, off, va, va, fs, ms, al) for t, fl, off, va, fs, ms, al in phdrs)
     return (header + ph).ljust(offset, b'\0') + body
