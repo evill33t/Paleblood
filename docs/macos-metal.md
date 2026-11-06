@@ -102,11 +102,10 @@ validate every instruction against its declared SGPR/VGPR allocation.
 
 Readback is tightly packed BGRA, matching the display API. Images are separate GPU resources:
 they are not copied back into the guest pool or interpreted as tiled console surfaces.
-The generic register events use the Vulkan executor's opaque-triangle profile: blending, depth,
-non-copy colour operations, partial colour masks and multiple instances stop with a reason;
-a zero colour mask disables attachment writes while still executing the draw. Unlike the current
-Vulkan software no-op, this preserves shader memory writes; the Metal test observes an owned
-vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
+The generic register events validate this backend's supported opaque-triangle profile: blending,
+depth, non-copy colour operations, partial colour masks and multiple instances stop with a reason.
+A zero colour mask disables attachment writes while still executing the draw. The Metal test
+observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.
 
 Screen scissors use the existing register events for `PA_SC_SCREEN_SCISSOR_TL` and `_BR`.
