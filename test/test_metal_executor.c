@@ -23,7 +23,7 @@ enum { POOL_SIZE = 4 << 20, VERTEX_CODE = 0x1000, PIXEL_CODE = 0x2000,
        IMAGE_PIXEL_CODE = 0x1c000, IMAGE_MIP_PIXEL_CODE = 0x1d000,
        SAMPLE_PIXEL_CODE = 0x1e000, MEMORY_IMAGE_PIXEL_CODE = 0x1f000,
        FETCH_CALLEE_CODE = 0x26000, FETCH_CALLER_CODE = 0x27000, FETCH_DESCRIPTOR_TABLE = 0x25000,
-       STORE_X_VERTEX_CODE = 0x28000,
+       STORE_X_VERTEX_CODE = 0x28000, PACKED_COLORS = 0x29000,
        CORNERS = 0x10000, COLORS = 0x10100, SOLID_COLORS = 0x10200, VERTEX_WRITES = 0x11000,
        INDEX_CORNERS = 0x12000, INDEX_COLORS = 0x13000, INDICES16 = 0x14000, INDICES32 = 0x14100,
        FORMAT_WRITES = 0x17000 };
@@ -226,7 +226,7 @@ static void check_persistent_state(rt_executor *x, unsigned char *pool)
     uint32_t untouched = 0xdeadbeef;
     CHECK(rt_executor_read_target(x, target, &untouched, 1, 1, error, sizeof error) == -1 && untouched == 0xdeadbeef);
     memset(markers, 0, 7 * sizeof *markers);
-    CHECK(rt_render_record_draw_indexed_offset(draw_buffer, 0x10, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_index_offset_packet(draw_buffer, 0x10, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
     if (!run(x, draw_buffer, 0x20)) {
         CHECK(markers[0] == 0 && markers[1] == 0 && markers[2] == 0 && markers[6] == 0);
         CHECK(markers[3] == 0x13572468 && markers[4] == 0x13572468 && markers[5] == 0x13572468);
@@ -236,7 +236,7 @@ static void check_persistent_state(rt_executor *x, unsigned char *pool)
 
     /* Only the write mask changes; shaders, SGPRs, viewport and 32-bit index state still apply. */
     CHECK(rt_render_record_register(unmask_buffer, 0x10, 0xa08e, 15, error, sizeof error) == 0);
-    CHECK(rt_render_record_draw_indexed_offset(unmask_buffer, 0x20, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_index_offset_packet(unmask_buffer, 0x20, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
     if (!run(x, unmask_buffer, 0x30)) check_gradient(x, target, 16, 16, 0);
     scenarios++;
 
@@ -247,7 +247,7 @@ static void check_persistent_state(rt_executor *x, unsigned char *pool)
     const float solid[3][4] = {{0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}};
     memcpy(pool + INDEX_COLORS + 3 * sizeof solid[0], solid, sizeof solid);
     memset(markers, 0, 7 * sizeof *markers);
-    CHECK(rt_render_record_draw_indexed_offset(retained_buffer, 0x10, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_index_offset_packet(retained_buffer, 0x10, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
     if (!run(x, retained_buffer, 0x20)) {
         CHECK(markers[3] == 0x13572468 && markers[4] == 0x13572468 && markers[5] == 0x13572468 && markers[6] == 0);
         check_gradient(x, target, 16, 16, 0);
@@ -261,7 +261,7 @@ static void check_persistent_state(rt_executor *x, unsigned char *pool)
     scenarios++;
     size = record_index_setup(fresh_buffer, target, 1);
     CHECK(rt_render_record_index_base(fresh_buffer, size, at(INDICES32), error, sizeof error) == 0); size += 0x10;
-    CHECK(rt_render_record_draw_indexed_offset(fresh_buffer, size, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0); size += 0x10;
+    CHECK(rt_render_record_draw_index_offset_packet(fresh_buffer, size, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0); size += 0x10;
     if (!run(x, fresh_buffer, size)) check_solid(x, target);
     const float colors[3][4] = {{0, 0, 0.25f, 1}, {2, 0, 0.25f, 1}, {0, 2, 0.25f, 1}};
     memcpy(pool + INDEX_COLORS + 3 * sizeof colors[0], colors, sizeof colors);
@@ -537,7 +537,7 @@ int main(void)
     size = record_setup(41, at(0x610000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_index_type(41, size, 0xffffffff, error, sizeof error) == 0); size += 0x10;
     CHECK(rt_render_record_index_base(41, size, UINT64_MAX, error, sizeof error) == 0); size += 0x10;
-    CHECK(rt_render_record_index_buffer_size(41, size, 0, error, sizeof error) == 0); size += 0x10;
+    CHECK(rt_render_record_index_size(41, size, 0, error, sizeof error) == 0); size += 0x10;
     CHECK(rt_render_record_draw_auto(41, size, 3, error, sizeof error) == 0); size += 0x10;
     if (!run(x, 41, size)) check_gradient(x, at(0x610000), 16, 16, 0);
     scenarios++;
@@ -729,12 +729,36 @@ int main(void)
         size = record_index_setup(buffer, target, type);
         if (offset_form) {
             CHECK(rt_render_record_index_base(buffer, size, address, error, sizeof error) == 0); size += 0x10;
-            CHECK(rt_render_record_index_buffer_size(buffer, size, 1, error, sizeof error) == 0); size += 0x10;
+            CHECK(rt_render_record_index_size(buffer, size, 1, error, sizeof error) == 0); size += 0x10;
             /* MAX_SIZE is the effective fetch count, not offset + count or the older size state. */
-            CHECK(rt_render_record_draw_indexed_offset(buffer, size, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
+            CHECK(rt_render_record_draw_index_offset_packet(buffer, size, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
         } else CHECK(rt_render_record_draw_indexed(buffer, size, draw_indexed_header, 3, address + width, 3, 0, error, sizeof error) == 0);
         size += 0x10;
         if (!run(x, buffer, size)) check_gradient(x, target, 16, 16, 0);
+        scenarios++;
+        rt_executor_reset(x);
+    }
+
+    /* Canonical logical draws carry first/count only, with an optional retained buffer extent. */
+    for (unsigned type = 0; type < 2; ++type) for (unsigned bounded = 0; bounded < 2; ++bounded) {
+        uint64_t setup = 1500 + type * 4 + bounded * 2, buffer = setup + 1, target = at(0x700000);
+        size = record_index_setup(setup, target, type);
+        CHECK(rt_render_record_index_base(setup, size, at(type ? INDICES32 : INDICES16), error, sizeof error) == 0); size += 0x10;
+        if (bounded) { CHECK(rt_render_record_index_size(setup, size, 4, error, sizeof error) == 0); size += 0x10; }
+        run(x, setup, size);
+        CHECK(rt_render_record_draw_index_offset(buffer, 0x10, 1, 3, error, sizeof error) == 0);
+        if (!run(x, buffer, 0x20)) check_gradient(x, target, 16, 16, 0);
+        scenarios++;
+        rt_executor_reset(x);
+    }
+    const struct { uint32_t extent, first; } legacy_ranges[] = {{0, 1}, {3, 1}, {UINT32_MAX, UINT32_MAX}};
+    for (unsigned i = 0; i < sizeof legacy_ranges / sizeof legacy_ranges[0]; ++i) {
+        uint64_t buffer = 1510 + i;
+        size = record_index_setup(buffer, at(0x700000), 1);
+        CHECK(rt_render_record_index_base(buffer, size, at(INDICES32), error, sizeof error) == 0); size += 0x10;
+        CHECK(rt_render_record_index_size(buffer, size, legacy_ranges[i].extent, error, sizeof error) == 0); size += 0x10;
+        CHECK(rt_render_record_draw_index_offset(buffer, size, legacy_ranges[i].first, 3, error, sizeof error) == 0); size += 0x10;
+        expect_error(x, buffer, size, "legacy indexed draw exceeds INDEX_BUFFER_SIZE");
         scenarios++;
         rt_executor_reset(x);
     }
@@ -744,7 +768,7 @@ int main(void)
         uint64_t buffer = 54 + offset_form, target = at(0x740000 + offset_form * 0x10000);
         size = record_index_setup(buffer, target, 0);
         if (offset_form)
-            CHECK(rt_render_record_draw_indexed_offset(buffer, size, draw_indexed_offset_header, 0, UINT32_MAX, 0, 0, error, sizeof error) == 0);
+            CHECK(rt_render_record_draw_index_offset_packet(buffer, size, draw_indexed_offset_header, 0, UINT32_MAX, 0, 0, error, sizeof error) == 0);
         else CHECK(rt_render_record_draw_indexed(buffer, size, draw_indexed_header, 0, UINT64_MAX, 0, 0, error, sizeof error) == 0);
         size += 0x10;
         if (!run(x, buffer, size)) check_clipped_gradient(x, target, 0, 0, 0, 0);
@@ -783,7 +807,7 @@ int main(void)
     CHECK(rt_render_record_index_base(59, size, at(INDICES16), error, sizeof error) == 0); size += 0x10;
     CHECK(rt_render_record_draw_indexed(59, size, draw_indexed_header, 3, at(INDICES16) + 2, 3, 0, error, sizeof error) == 0);
     size += 0x10;
-    CHECK(rt_render_record_draw_indexed_offset(59, size, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_index_offset_packet(59, size, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
     size += 0x10;
     expect_error(x, 59, size, "fresh INDEX_BASE");
     check_gradient(x, at(0x790000), 16, 16, 0);
@@ -791,7 +815,7 @@ int main(void)
     CHECK(rt_render_record_draw_indexed(59, size, draw_indexed_header, 3, at(INDICES16) + 2, 3, 0, error, sizeof error) == 0);
     size += 0x10;
     CHECK(rt_render_record_index_base(59, size, at(INDICES16), error, sizeof error) == 0); size += 0x10;
-    CHECK(rt_render_record_draw_indexed_offset(59, size, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_index_offset_packet(59, size, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
     size += 0x10;
     if (!run(x, 59, size)) check_gradient(x, at(0x790000), 16, 16, 0);
     scenarios++;
@@ -830,6 +854,7 @@ int main(void)
         {0, 1, draw_indexed_offset_header, 0, "requires INDEX_BASE"},
         {UINT64_MAX - 1, 1, draw_indexed_offset_header, 1, "overflows"},
         {at(INDICES32), UINT32_MAX, draw_indexed_offset_header, 1, "outside the GPU-visible pool"},
+        {at(INDICES32), 1, 0, 1, "packet header"},
         {at(INDICES32), 1, draw_indexed_offset_header | 1, 1, "predicated"},
         {at(INDICES32), 1, draw_indexed_offset_header | 2, 1, "packet header"},
     };
@@ -839,7 +864,7 @@ int main(void)
         if (invalid_offsets[i].set_base) {
             CHECK(rt_render_record_index_base(buffer, size, invalid_offsets[i].base, error, sizeof error) == 0); size += 0x10;
         }
-        CHECK(rt_render_record_draw_indexed_offset(buffer, size, invalid_offsets[i].header, 3,
+        CHECK(rt_render_record_draw_index_offset_packet(buffer, size, invalid_offsets[i].header, 3,
             invalid_offsets[i].offset, 3, 0, error, sizeof error) == 0); size += 0x10;
         expect_error(x, buffer, size, invalid_offsets[i].reason);
         scenarios++;
@@ -1118,6 +1143,48 @@ int main(void)
                             !near(pixels[i] & 255, 0.75f) || pixels[i] >> 24 != 255) bad++;
                     CHECK(bad == 0);
                 }
+            }
+        }
+        scenarios++;
+        rt_executor_reset(x);
+    }
+
+    /* The shared translator's packed UNORM8 table must compile and load/swizzle in both stages. */
+    const uint32_t packed_colors[3] = {0xff8020bf, 0xff8020bf, 0xff8020bf};
+    memcpy(pool + PACKED_COLORS, packed_colors, sizeof packed_colors);
+    for (unsigned stage = 0; stage < 2; ++stage) for (unsigned swap = 0; swap < 2; ++swap) {
+        const uint64_t buffer = 410 + stage * 2 + swap, target = at(0x930000);
+        uint32_t user[8];
+        size = record_setup(buffer, target, 16, 16, 0, scale, translate, COLORS);
+        if (stage == 0) {
+            uint32_t vertex[RT_VERTEX_SHADER_WORDS]; vertex_registers(vertex, FORMAT_VERTEX_CODE);
+            descriptor(user, at(CORNERS)); user[3] = DST_XYZW | 7u << 12 | 14u << 15;
+            descriptor(user + 4, at(PACKED_COLORS)); user[5] = (uint32_t)(at(PACKED_COLORS) >> 32) | 4u << 16;
+            user[6] = 3; user[7] = (swap ? DST_ZYXW : DST_XYZW) | 10u << 15;
+            CHECK(rt_render_record_vertex_shader(buffer, size, vertex, error, sizeof error) == 0); size += 0x10;
+            CHECK(rt_render_record_user_data(buffer, size, RT_STAGE_VERTEX, 0, user, 8, error, sizeof error) == 0); size += 0x10;
+        } else {
+            uint32_t pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(pixel, FORMAT_PIXEL_CODE);
+            pixel[3] = 4 << 1; pixel[5] = 9; pixel[8] = 0;
+            descriptor(user, at(PACKED_COLORS)); user[1] = (uint32_t)(at(PACKED_COLORS) >> 32) | 4u << 16;
+            user[2] = 3; user[3] = (swap ? DST_ZYXW : DST_XYZW) | 10u << 15;
+            CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0); size += 0x10;
+            CHECK(rt_render_record_user_data(buffer, size, RT_STAGE_PIXEL, 0, user, 4, error, sizeof error) == 0); size += 0x10;
+        }
+        CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
+        if (!run(x, buffer, size)) {
+            uint32_t pixels[16 * 16];
+            int read = rt_executor_read_target(x, target, pixels, 16, 16, error, sizeof error);
+            CHECK(read == 0);
+            if (!read) {
+                unsigned bad = 0;
+                for (unsigned i = 0; i < 16 * 16; ++i) {
+                    uint32_t value = pixels[i];
+                    if (abs((int)(value >> 16 & 255) - (swap ? 128 : 191)) > 1 ||
+                        abs((int)(value >> 8 & 255) - 32) > 1 ||
+                        abs((int)(value & 255) - (swap ? 191 : 128)) > 1 || value >> 24 != 255) bad++;
+                }
+                CHECK(bad == 0);
             }
         }
         scenarios++;

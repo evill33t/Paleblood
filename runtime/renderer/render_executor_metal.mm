@@ -64,9 +64,9 @@ struct MetalState {
     bool blend_set = false, depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
     uint32_t scissor_tl = 0, scissor_br = 0;
     bool scissor_tl_set = false, scissor_br_set = false;
-    uint32_t index_type = 0;
+    uint32_t index_type = 0, index_size = 0;
     uint64_t index_base = 0;
-    bool index_type_set = false, index_base_set = false;
+    bool index_type_set = false, index_base_set = false, index_size_set = false;
     bool index_base_current = false;
 };
 struct rt_executor {
@@ -467,27 +467,34 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     return 0;
 }
 
-/* The _2 packets program their own DMA bound, independently of INDEX_BUFFER_SIZE. AMD's
+/* Raw _2 packets program their own DMA bound; logical offset calls use retained INDEX_SIZE. AMD's
    SI guide shifts INDEX_OFFSET by index width and adds INDEX_BASE; the register manual
    describes MAX_SIZE as the number of good fetches from that effective base. Zero filling
    beyond the bound is deliberately unsupported. No address is fetched when count is zero. */
 static int draw_indexed(rt_executor *x, MetalState &state, uint32_t header, uint32_t maximum, uint64_t address,
-                         uint32_t index_offset, bool use_index_base, uint32_t count, uint32_t initiator,
+                         uint32_t index_offset, bool use_index_base, bool has_packet_fields, uint32_t count, uint32_t initiator,
                          char *error, size_t size)
 {
     constexpr uint32_t DRAW_INDEX_2_HEADER = 0xc0042700u, DRAW_INDEX_OFFSET_2_HEADER = 0xc0033500u;
-    if (header & PM4_PREDICATE) return failed(error, size, "predicated indexed draws are not supported");
-    if (header != (use_index_base ? DRAW_INDEX_OFFSET_2_HEADER : DRAW_INDEX_2_HEADER))
-        return failed(error, size, "unsupported indexed packet header");
+    if (has_packet_fields) {
+        if (header & PM4_PREDICATE) return failed(error, size, "predicated indexed draws are not supported");
+        if (header != (use_index_base ? DRAW_INDEX_OFFSET_2_HEADER : DRAW_INDEX_2_HEADER))
+            return failed(error, size, "unsupported indexed packet header");
+        if (initiator != DRAW_INITIATOR_DMA)
+            return failed(error, size, "draw initiator %#x: only DMA source and major mode 0 are drawn", initiator);
+        if (count > maximum) return failed(error, size, "indexed draw beyond MAX_SIZE requires DMA zero filling, which is not supported");
+    } else {
+        // The logical offset API carries no packet fields; INDEX_SIZE bounds its buffer.
+        if (!state.index_base_set) return failed(error, size, "legacy indexed draw requires INDEX_BASE");
+        if (state.index_size_set && static_cast<uint64_t>(index_offset) + count > state.index_size)
+            return failed(error, size, "legacy indexed draw exceeds INDEX_BUFFER_SIZE");
+    }
     /* Public evidence does not settle the direct packet's effect on the CP's saved INDEX_BASE.
        Require a fresh explicit base before a later nonempty offset draw instead of guessing. */
     if (!use_index_base) state.index_base_current = false;
     if (!state.index_type_set) return failed(error, size, "indexed draw requires INDEX_TYPE");
     if (state.index_type != VGT_INDEX_16 && state.index_type != VGT_INDEX_32)
         return failed(error, size, "index type %#x: only 16/32-bit indices without byte swapping are drawn", state.index_type);
-    if (initiator != DRAW_INITIATOR_DMA)
-        return failed(error, size, "draw initiator %#x: only DMA source and major mode 0 are drawn", initiator);
-    if (count > maximum) return failed(error, size, "indexed draw beyond MAX_SIZE requires DMA zero filling, which is not supported");
     const uint64_t width = state.index_type == VGT_INDEX_16 ? 2 : 4;
     MetalIndices indices{state.index_type == VGT_INDEX_16 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, 0};
     if (count) {
@@ -552,13 +559,11 @@ extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, 
                             return failed(error, error_size, "register %#x: the executor does not interpret it yet", call.u.reg.address);
                         break;
                     case RT_CALL_INSTANCES: state.instances = call.u.instances.count; break;
-                    case RT_CALL_INDEX_TYPE: state.index_type = call.u.index_type; state.index_type_set = true; break;
+                    case RT_CALL_INDEX_TYPE: state.index_type = call.u.index_type.type; state.index_type_set = true; break;
                     case RT_CALL_INDEX_BASE:
-                        state.index_base = call.u.index_base; state.index_base_set = true; state.index_base_current = true; break;
-                    case RT_CALL_INDEX_BUFFER_SIZE:
-                        /* The supported _2 draw packets carry their own MAX_SIZE. Other indexed
-                           packet kinds are rejected, so this recorded state has no consumer here. */
-                        break;
+                        state.index_base = call.u.index_base.address; state.index_base_set = true; state.index_base_current = true; break;
+                    case RT_CALL_INDEX_SIZE:
+                        state.index_size = call.u.index_size.count; state.index_size_set = true; break;
                     case RT_CALL_DRAW_AUTO: {
                         if (check_state(state, error, error_size)) return -1;
                         if (draw(x, state, call.u.draw_auto.index_count, error, error_size)) return -1;
@@ -566,14 +571,17 @@ extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, 
                     }
                     case RT_CALL_DRAW_INDEXED: {
                         const auto &indexed = call.u.draw_indexed;
-                        if (draw_indexed(x, state, indexed.header, indexed.max_size, indexed.address, 0, false,
+                        if (draw_indexed(x, state, indexed.header, indexed.max_size, indexed.address, 0, false, true,
                             indexed.index_count, indexed.initiator, error, error_size)) return -1;
                         break;
                     }
-                    case RT_CALL_DRAW_INDEXED_OFFSET: {
-                        const auto &indexed = call.u.draw_indexed_offset;
-                        if (draw_indexed(x, state, indexed.header, indexed.max_size, 0, indexed.index_offset, true,
-                            indexed.index_count, indexed.initiator, error, error_size)) return -1;
+                    case RT_CALL_DRAW_INDEX_OFFSET: {
+                        const auto &indexed = call.u.draw_index;
+                        if (indexed.has_packet_fields > 1 || (!indexed.has_packet_fields &&
+                            (indexed.header || indexed.max_size || indexed.initiator)))
+                            return failed(error, error_size, "inconsistent indexed packet-field tag");
+                        if (draw_indexed(x, state, indexed.header, indexed.max_size, 0, indexed.first, true,
+                            indexed.has_packet_fields != 0, indexed.count, indexed.initiator, error, error_size)) return -1;
                         break;
                     }
                     default: return failed(error, error_size, "render call kind %u is outside the Metal draw profile", static_cast<unsigned>(call.kind));

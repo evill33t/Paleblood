@@ -120,23 +120,27 @@ intersects that rectangle with its target for Metal. Coordinates outside AMD's d
 positive range, or only one of the initial TL/BR pair, are rejected. Empty intersections still
 submit a genuine zero-area draw. This path has run on an M4 Max; other GPUs remain unqualified.
 
-Indexed draws consume the canonical `DRAW_INDEX_2` and `DRAW_INDEX_OFFSET_2` observer payloads,
-including their actual packet headers. Predication, other header flags, byte swapping, unsupported
-index types and initiator values stop with named errors. Both forms require an explicit supported
-`INDEX_TYPE`. The offset form shifts `INDEX_OFFSET` by the selected element width and adds
-`INDEX_BASE`, as the [AMD SI programming guide, section 2.5.6](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/si_programming_guide_v2.pdf)
+Indexed state uses the canonical `INDEX_BASE`, `INDEX_SIZE` and `INDEX_TYPE` events.
+Logical `DRAW_INDEX_OFFSET` calls carry only first/count and check the retained `INDEX_SIZE`
+when one was set. The same offset event has an explicit `has_packet_fields` tag for raw
+`DRAW_INDEX_OFFSET_2` words; zero raw headers stay raw and are rejected. Addressed `DRAW_INDEX_2`
+events retain their actual packet header, address, count, maximum and initiator. Predication,
+other raw header flags, byte swapping, unsupported index types and initiator values stop with
+named errors. Both forms require an explicit supported `INDEX_TYPE`. The offset form shifts
+`INDEX_OFFSET` by the selected element width and adds `INDEX_BASE`, as the
+[AMD SI programming guide, section 2.5.6](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/si_programming_guide_v2.pdf)
 describes. Address addition, alignment and the fetched byte range are checked against the pool.
-A zero-count packet still submits a pass, using no guest index address or memory.
+A zero-count raw packet still submits a pass, using no guest index address or memory.
 
-The packet's `MAX_SIZE` programs its own DMA bound, replacing the previous `INDEX_BUFFER_SIZE`.
+A raw packet's `MAX_SIZE` programs its own DMA bound, independently of retained `INDEX_SIZE`.
 The CIK register manual describes good fetches and zero filling beyond `VGT_DMA_MAX_SIZE`;
 applying that bound at the effective shifted base is an inference from the two documents, not a
-PS4 GPU measurement. The initial profile accepts `index_count <= MAX_SIZE`, independently of
+PS4 GPU measurement. The raw profile accepts `index_count <= MAX_SIZE`, independently of
 the starting offset, and rejects draws requiring DMA zero filling. Public evidence has not
 established whether a direct draw changes the CP's saved `INDEX_BASE`: a later nonempty offset
 draw therefore requires a fresh explicit base event. The canonical call record retains the raw
-index events. Metal does not stage `INDEX_BUFFER_SIZE`: both supported draw packets supply their
-own `MAX_SIZE`, and other indexed packet kinds are rejected.
+index events. `INDEX_SIZE` is stored for logical offset calls; it does not add a first-plus-count
+bound to a raw packet's independent `MAX_SIZE`.
 
 Unsupported formats, shader instructions, shader inputs, layered/multisampled targets and
 target reallocations return a named error. Blending, depth and unrecorded state remain outside
@@ -155,7 +159,7 @@ and zero/one selectors; packed stores use the inverse component mapping. The uns
 itself leaves its destination untouched; other shader accesses and attachment writes may already
 have run. Scalar VCC half writes that leave a draw-stage lane mask unknown also return a named
 runtime stop. Each subsequent draw resets the word. Whole 32-bit uint, sint and float formats,
-and supported packed stores, retain the common translator's semantics. A whole-component store
+packed UNORM8 loads and supported packed stores retain the common translator's semantics. A whole-component store
 checks the selectors for the format's real components; selectors beyond them do not affect it.
 
 A GPU timeout or device failure makes the executor unusable; completion retains
@@ -169,7 +173,8 @@ order, rectangular targets, both viewport Y directions, submission boundaries, c
 shared-memory updates, signed/exclusive and empty scissors, nontrivial 16/32-bit indices in both
 address forms, pool-end index reads, zero-count draws, index updates, placed-shader ordering and
 recorder buffer isolation, recorder submission resets, null pixel shaders, 40-bit descriptor bases, descriptor
-formats and swizzles in both stages, pool-end scalar loads with constant selectors, skipped-store
+formats and swizzles in both stages, packed UNORM8 buffer loads, canonical logical index-size
+bounds and raw-header tagging, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unbound pixel-image
 and sampling operations, descriptors loaded from memory, unbound fetch calls, strip/depth-target
 guards, unsupported compute/rect
