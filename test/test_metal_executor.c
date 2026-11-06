@@ -741,7 +741,8 @@ int main(void)
 
     /* Canonical logical draws carry first/count only, with an optional retained buffer extent. */
     for (unsigned type = 0; type < 2; ++type) for (unsigned bounded = 0; bounded < 2; ++bounded) {
-        uint64_t setup = 1500 + type * 4 + bounded * 2, buffer = setup + 1, target = at(0x700000);
+        uint64_t setup = 1500 + type * 4 + bounded * 2, buffer = setup + 1;
+        uint64_t target = at(0xe00000 + (type * 2 + bounded) * 0x10000);
         size = record_index_setup(setup, target, type);
         CHECK(rt_render_record_index_base(setup, size, at(type ? INDICES32 : INDICES16), error, sizeof error) == 0); size += 0x10;
         if (bounded) { CHECK(rt_render_record_index_size(setup, size, 4, error, sizeof error) == 0); size += 0x10; }
@@ -1153,7 +1154,7 @@ int main(void)
     const uint32_t packed_colors[3] = {0xff8020bf, 0xff8020bf, 0xff8020bf};
     memcpy(pool + PACKED_COLORS, packed_colors, sizeof packed_colors);
     for (unsigned stage = 0; stage < 2; ++stage) for (unsigned swap = 0; swap < 2; ++swap) {
-        const uint64_t buffer = 410 + stage * 2 + swap, target = at(0x930000);
+        const uint64_t buffer = 410 + stage * 2 + swap, target = at(0xf00000 + (stage * 2 + swap) * 0x10000);
         uint32_t user[8];
         size = record_setup(buffer, target, 16, 16, 0, scale, translate, COLORS);
         if (stage == 0) {
