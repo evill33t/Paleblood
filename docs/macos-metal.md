@@ -91,7 +91,8 @@ parameters. Declared vertex parameter and pixel interpolant capacities must cove
 interface, including on shader-cache hits; larger unused allocations are accepted.
 
 Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center inputs and no
-depth export. Other color layouts, output masks, barycentric modes and depth controls stop with
+depth export. Pixel-position X/Y inputs and whole-quad shader operations are outside this profile
+and are rejected explicitly. Other color layouts, output masks, barycentric modes and depth controls stop with
 a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
 The input remains valid GFX7 code with consistent resource metadata: this backend does not
 validate every instruction against its declared SGPR/VGPR allocation.
@@ -133,16 +134,17 @@ own `MAX_SIZE`, and other indexed packet kinds are rejected.
 
 Unsupported formats, shader instructions, shader inputs, layered/multisampled targets and
 target reallocations return a named error. Blending, depth and unrecorded state remain outside
-this profile. Texture/sampler execution and fetch-shader calls remain unsupported by the shared
-translator. Rectangle lists need a geometry-expansion path and are rejected; compute shader
+this profile. Storage images are not bound by this draw backend; texture sampling and
+fetch-shader calls remain unsupported by the shared translator. Rectangle lists need a geometry-expansion path and are rejected; compute shader
 bindings and dispatch events are also rejected explicitly by this draw-only backend.
 
 Descriptor-format accesses use the common translator's runtime stop channel: the executor owns
 a shared GPU-addressable stop word, declares its residency for both stages, and checks it after
-completion. Unsupported runtime formats or swizzles return a named load/store error rather
-than a successful draw. The unsupported access itself leaves its destination untouched; other
-shader accesses and attachment writes may already have run. Each subsequent draw resets the
-word. Whole 32-bit uint, sint and float formats, and supported packed stores, retain the common
+completion. Unsupported runtime formats or reserved swizzle selectors return a named load/store error rather
+than a successful draw. Supported loads use the descriptor's component swizzles and zero/one
+selectors; packed stores use the inverse component mapping. The unsupported access itself leaves its destination untouched; other
+shader accesses and attachment writes may already have run. Scalar VCC half writes that leave a draw-stage lane mask unknown also return a named runtime
+stop. Each subsequent draw resets the word. Whole 32-bit uint, sint and float formats, and supported packed stores, retain the common
 translator's semantics.
 
 A GPU timeout or device failure makes the executor unusable; completion retains
@@ -156,7 +158,8 @@ order, rectangular targets, both viewport Y directions, submission boundaries, s
 shared-memory updates, signed/exclusive and empty scissors, nontrivial 16/32-bit indices in both
 address forms, pool-end index reads, zero-count draws, index updates, placed-shader ordering and
 buffer isolation, submission resets, null pixel shaders, 40-bit descriptor bases, descriptor
-formats in both stages, skipped-store canaries, runtime-stop recovery, unsupported compute/rect
+formats and swizzles in both stages, pool-end scalar loads with constant selectors, skipped-store
+canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unsupported compute/rect
 events, readback bounds and mapping lifetime.
 It fails if no suitable GPU exists.
 Hosted CI compiles this code for ARM64 and x86-64; it does not run these GPU checks. A successful

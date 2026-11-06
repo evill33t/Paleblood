@@ -293,6 +293,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         result = gcn_translate_vertex(words, available, &layout, &spirv, &count, reason, sizeof reason);
     } else {
+        /* shader_profile admits only perspective-center barycentrics in VGPR0/1, with no position inputs. */
         gcn_pixel_layout layout{};
         layout.user_sgprs = user; layout.push_constant_offset = USER_BYTES;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
@@ -302,6 +303,9 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
     try {
         spirv_cross::CompilerMSL compiler(spirv, count);
+        const auto &capabilities = compiler.get_declared_capabilities();
+        if (std::find(capabilities.begin(), capabilities.end(), spv::CapabilityGroupNonUniformQuad) != capabilities.end())
+            return failed(error, error_size, "whole-quad shader operations are outside the Metal draw profile"), nil;
         const auto resources = compiler.get_shader_resources();
         const auto &parameters = vertex ? resources.stage_outputs : resources.stage_inputs;
         unsigned required_parameters = 0;
@@ -454,6 +458,8 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_BUFFER_FORMAT)
         return failed(error, size, "shader runtime stop: %u-component buffer %s, DATA_FORMAT %u, NUM_FORMAT %u%s is unsupported",
             stop & 7, stop & 0x80 ? "store" : "load", stop >> 8 & 15, stop >> 4 & 7, stop & 8 ? ", nonidentity swizzle" : "");
+    if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_VCC_UNKNOWN)
+        return failed(error, size, "shader runtime stop: VCC lane mask is unknown after a scalar half write");
     if (stop) return failed(error, size, "shader runtime stop with unknown code %#x", stop);
     return 0;
 }

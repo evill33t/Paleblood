@@ -80,4 +80,32 @@ static const uint32_t pixel_descriptor_format[] = {
     0xbf810000, /* s_endpgm                                */
 };
 
+static const uint32_t vertex_vcc_unknown[] = {
+    0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xebf32000, 0x80010500, /* tbuffer_load_format_xyzw v[5:8], v0, s[4:7], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0)                      */
+    0xbeea0480, /* s_mov_b64 vcc, 0                        */
+    0x7e1202f2, /* v_mov_b32_e32 v9, 1.0                   */
+    0x000a1305, /* v_cndmask_b32_e32 v5, v5, v9, vcc       */
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8              */
+    0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done           */
+    0xbf810000, /* s_endpgm                                */
+};
+
+static const uint32_t pixel_vcc_unknown[] = {
+    0xbeea0480, /* s_mov_b64 vcc, 0                        */
+    0x7e040280, /* v_mov_b32_e32 v2, 0                     */
+    0x7e0602f2, /* v_mov_b32_e32 v3, 1.0                   */
+    0x00080702, /* v_cndmask_b32_e32 v4, v2, v3, vcc       */
+    0xf800180f, 0x03040404, /* exp mrt0, v4, v4, v4, v3 done vm        */
+    0xbf810000, /* s_endpgm                                */
+};
+
+static const uint32_t pixel_whole_quad[] = {
+    0xbefe0a7e, /* s_wqm_b64 exec, exec                    */
+    0x7e0402f2, /* v_mov_b32_e32 v2, 1.0                   */
+    0xf800180f, 0x02020202, /* exp mrt0, v2, v2, v2, v2 done vm        */
+    0xbf810000, /* s_endpgm                                */
+};
+
 #endif

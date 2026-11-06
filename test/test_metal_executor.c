@@ -19,6 +19,7 @@ enum { POOL_SIZE = 4 << 20, VERTEX_CODE = 0x1000, PIXEL_CODE = 0x2000,
        CLIP_VERTEX_CODE = 0x7000, CLIP_EIGHT_CODE = 0x8000, TWO_VERTEX_CODE = 0x9000,
        TWO_PIXEL_CODE = 0xa000, FLOAT_PIXEL_CODE = 0xb000, FORMAT_VERTEX_CODE = 0xc000,
        FORMAT_STORE_CODE = 0xd000, FORMAT_PIXEL_CODE = 0xe000, COMPUTE_CODE = 0xf000,
+       POSITION_PIXEL_CODE = 0x18000, VCC_VERTEX_CODE = 0x19000, VCC_PIXEL_CODE = 0x1a000, QUAD_PIXEL_CODE = 0x1b000,
        CORNERS = 0x10000, COLORS = 0x10100, SOLID_COLORS = 0x10200, VERTEX_WRITES = 0x11000,
        INDEX_CORNERS = 0x12000, INDEX_COLORS = 0x13000, INDICES16 = 0x14000, INDICES32 = 0x14100,
        FORMAT_WRITES = 0x17000 };
@@ -226,6 +227,10 @@ int main(void)
     memcpy(pool + FORMAT_STORE_CODE, vertex_store_format, sizeof vertex_store_format);
     memcpy(pool + FORMAT_PIXEL_CODE, pixel_descriptor_format, sizeof pixel_descriptor_format);
     memcpy(pool + COMPUTE_CODE, scale_add, sizeof scale_add);
+    memcpy(pool + POSITION_PIXEL_CODE, pixel_position_color, sizeof pixel_position_color);
+    memcpy(pool + VCC_VERTEX_CODE, vertex_vcc_unknown, sizeof vertex_vcc_unknown);
+    memcpy(pool + VCC_PIXEL_CODE, pixel_vcc_unknown, sizeof pixel_vcc_unknown);
+    memcpy(pool + QUAD_PIXEL_CODE, pixel_whole_quad, sizeof pixel_whole_quad);
     const float corners[3][4] = {{-1, -1, 0, 1}, {3, -1, 0, 1}, {-1, 3, 0, 1}};
     const float colors[3][4] = {{0, 0, 0.25f, 1}, {2, 0, 0.25f, 1}, {0, 2, 0.25f, 1}};
     const float solid[3][4] = {{0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}};
@@ -934,21 +939,93 @@ int main(void)
         }
         scenarios++;
     }
-    /* Fragment-stage stop-word residency and cached recovery, including a rejected load swizzle. */
-    for (unsigned f = 0; f < 4; ++f) {
+    /* Fragment-stage format swizzles, reserved-selector stops and cached recovery. */
+    for (unsigned f = 0; f < 5; ++f) {
         const uint64_t buffer = 320 + f;
         size = record_setup(buffer, at(0x930000), 16, 16, 0, scale, translate, COLORS);
         uint32_t pixel[RT_PIXEL_SHADER_WORDS], user[4]; pixel_registers(pixel, FORMAT_PIXEL_CODE);
         pixel[3] = 4 << 1; pixel[5] = 9; pixel[8] = 0;
         descriptor(user, at(SOLID_COLORS));
-        user[3] = f == 1 ? DST_XYZW | 5u << 15 : (f == 2 ? DST_ZYXW : DST_XYZW) | 7u << 12 | 14u << 15;
+        user[3] = f == 1 ? DST_XYZW | 5u << 15 :
+            (f == 2 ? DST_ZYXW : f == 3 ? (DST_XYZW & ~7u) | 2 : DST_XYZW) | 7u << 12 | 14u << 15;
         CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_user_data(buffer, size, RT_STAGE_PIXEL, 0, user, 4, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
-        if (f == 1 || f == 2) expect_error(x, buffer, size, "shader runtime stop: 4-component buffer load");
-        else if (!run(x, buffer, size)) check_solid(x, at(0x930000));
+        if (f == 1 || f == 3) expect_error(x, buffer, size, "shader runtime stop: 4-component buffer load");
+        else if (!run(x, buffer, size)) {
+            if (f != 2) check_solid(x, at(0x930000));
+            else {
+                uint32_t pixels[16 * 16];
+                int read = rt_executor_read_target(x, at(0x930000), pixels, 16, 16, error, sizeof error);
+                CHECK(read == 0);
+                if (!read) {
+                    unsigned bad = 0;
+                    for (unsigned i = 0; i < 16 * 16; ++i)
+                        if (!near(pixels[i] >> 16 & 255, 0.5f) || !near(pixels[i] >> 8 & 255, 0.125f) ||
+                            !near(pixels[i] & 255, 0.75f) || pixels[i] >> 24 != 255) bad++;
+                    CHECK(bad == 0);
+                }
+            }
+        }
         scenarios++;
     }
+
+    /* A one-component format at the last pool dword: selectors supply zero and float one. */
+    memcpy(pool + POOL_SIZE - 4, solid[0], sizeof(float));
+    size = record_setup(340, at(0x930000), 16, 16, 0, scale, translate, COLORS);
+    uint32_t constant_pixel[RT_PIXEL_SHADER_WORDS], constant_user[4];
+    pixel_registers(constant_pixel, FORMAT_PIXEL_CODE); constant_pixel[3] = 4 << 1; constant_pixel[5] = 9; constant_pixel[8] = 0;
+    descriptor(constant_user, at(POOL_SIZE - 4)); constant_user[3] = 4 | 0 << 3 | 1 << 6 | 1 << 9 | 7u << 12 | 4u << 15;
+    CHECK(rt_render_record_pixel_shader(340, size, constant_pixel, error, sizeof error) == 0); size += 0x10;
+    CHECK(rt_render_record_user_data(340, size, RT_STAGE_PIXEL, 0, constant_user, 4, error, sizeof error) == 0); size += 0x10;
+    CHECK(rt_render_record_draw_auto(340, size, 3, error, sizeof error) == 0); size += 0x10;
+    if (!run(x, 340, size)) {
+        uint32_t pixels[16 * 16]; int read = rt_executor_read_target(x, at(0x930000), pixels, 16, 16, error, sizeof error);
+        CHECK(read == 0);
+        if (!read) {
+            unsigned bad = 0;
+            for (unsigned i = 0; i < 16 * 16; ++i)
+                if (!near(pixels[i] >> 16 & 255, 0.75f) || pixels[i] >> 8 & 255 || (pixels[i] & 255) != 255 || pixels[i] >> 24 != 255) bad++;
+            CHECK(bad == 0);
+        }
+    }
+    scenarios++;
+
+    /* Position x/y inputs are decoded upstream, but are outside this explicitly barycentric-only profile. */
+    const uint32_t positions[] = {0x102, 0x202, 0x302};
+    for (unsigned i = 0; i < sizeof positions / sizeof positions[0]; ++i) {
+        uint64_t buffer = 350 + i; uint32_t pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(pixel, POSITION_PIXEL_CODE);
+        pixel[5] = 9; pixel[8] = 0; pixel[6] = pixel[7] = positions[i];
+        size = record_setup(buffer, at(0x930000), 16, 16, 0, scale, translate, COLORS);
+        CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0); size += 0x10;
+        CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
+        expect_error(x, buffer, size, "inputs beyond perspective-center barycentrics");
+        scenarios++;
+    }
+    /* A scalar VCC half write leaves the lane mask unknown in both draw stages. */
+    for (unsigned stage = 0; stage < 2; ++stage) {
+        uint64_t buffer = 360 + stage;
+        size = record_setup(buffer, at(0x930000), 16, 16, 0, scale, translate, COLORS);
+        if (stage == 0) {
+            uint32_t vertex[RT_VERTEX_SHADER_WORDS]; vertex_registers(vertex, VCC_VERTEX_CODE);
+            CHECK(rt_render_record_vertex_shader(buffer, size, vertex, error, sizeof error) == 0);
+        } else {
+            uint32_t pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(pixel, VCC_PIXEL_CODE); pixel[5] = 9; pixel[8] = 0;
+            CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0);
+        }
+        size += 0x10;
+        CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
+        expect_error(x, buffer, size, "VCC lane mask is unknown after a scalar half write");
+        size = record_draw(buffer, at(0x930000), 16, 16, 0, scale, translate, COLORS);
+        if (!run(x, buffer, size)) check_gradient(x, at(0x930000), 16, 16, 0);
+        scenarios++;
+    }
+    size = record_setup(370, at(0x930000), 16, 16, 0, scale, translate, COLORS);
+    uint32_t quad_pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(quad_pixel, QUAD_PIXEL_CODE); quad_pixel[5] = 9; quad_pixel[8] = 0;
+    CHECK(rt_render_record_pixel_shader(370, size, quad_pixel, error, sizeof error) == 0); size += 0x10;
+    CHECK(rt_render_record_draw_auto(370, size, 3, error, sizeof error) == 0); size += 0x10;
+    expect_error(x, 370, size, "whole-quad shader operations are outside the Metal draw profile");
+    scenarios++;
 
     /* New upstream compute events and rectangle lists never silently succeed in a draw-only backend. */
     const uint64_t compute_buffer = 0xc1000000;
