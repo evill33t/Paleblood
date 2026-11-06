@@ -123,6 +123,8 @@ const rt_render_call *call_at(uint64_t buffer, size_t expected = 1)
     size_t found{};
     const auto *calls = rt_render_submitted(buffer, UINT32_MAX, &found);
     CHECK(found == expected);
+    if (found == expected) for (size_t i = 0; i < found; ++i)
+        if (calls[i].kind == RT_CALL_DRAW_INDEX_OFFSET) CHECK(calls[i].u.draw_index.has_packet_fields == 1);
     return found == expected ? calls : nullptr;
 }
 
