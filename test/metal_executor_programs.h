@@ -147,4 +147,16 @@ static const uint32_t pixel_unbound_memory_image[] = {
     0xbf810000, /* s_endpgm                                */
 };
 
+static const uint32_t vertex_store_format_x[] = {
+    0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xebf32000, 0x80010500, /* tbuffer_load_format_xyzw v[5:8], v0, s[4:7], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0)                      */
+    0x7e1202ff, 0x13572468, /* v_mov_b32_e32 v9, 0x13572468            */
+    0x34140082, /* v_lshlrev_b32_e32 v10, 2, v0            */
+    0xe0101000, 0x8002090a, /* buffer_store_format_x v9, v10, s[8:11], 0 offen */
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8              */
+    0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done           */
+    0xbf810000, /* s_endpgm                                */
+};
+
 #endif

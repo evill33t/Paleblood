@@ -23,6 +23,7 @@ enum { POOL_SIZE = 4 << 20, VERTEX_CODE = 0x1000, PIXEL_CODE = 0x2000,
        IMAGE_PIXEL_CODE = 0x1c000, IMAGE_MIP_PIXEL_CODE = 0x1d000,
        SAMPLE_PIXEL_CODE = 0x1e000, MEMORY_IMAGE_PIXEL_CODE = 0x1f000,
        FETCH_CALLEE_CODE = 0x26000, FETCH_CALLER_CODE = 0x27000, FETCH_DESCRIPTOR_TABLE = 0x25000,
+       STORE_X_VERTEX_CODE = 0x28000,
        CORNERS = 0x10000, COLORS = 0x10100, SOLID_COLORS = 0x10200, VERTEX_WRITES = 0x11000,
        INDEX_CORNERS = 0x12000, INDEX_COLORS = 0x13000, INDICES16 = 0x14000, INDICES32 = 0x14100,
        FORMAT_WRITES = 0x17000 };
@@ -240,6 +241,7 @@ int main(void)
     memcpy(pool + MEMORY_IMAGE_PIXEL_CODE, pixel_unbound_memory_image, sizeof pixel_unbound_memory_image);
     memcpy(pool + FETCH_CALLEE_CODE, fetch_position_color, sizeof fetch_position_color);
     memcpy(pool + FETCH_CALLER_CODE, vertex_calling_fetch, sizeof vertex_calling_fetch);
+    memcpy(pool + STORE_X_VERTEX_CODE, vertex_store_format_x, sizeof vertex_store_format_x);
     const float corners[3][4] = {{-1, -1, 0, 1}, {3, -1, 0, 1}, {-1, 3, 0, 1}};
     const float colors[3][4] = {{0, 0, 0.25f, 1}, {2, 0, 0.25f, 1}, {0, 2, 0.25f, 1}};
     const float solid[3][4] = {{0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}};
@@ -949,6 +951,29 @@ int main(void)
         }
         scenarios++;
     }
+    /* A one-component store uses only its real selector; unused component selectors are irrelevant. */
+    uint32_t store_x_vertex[RT_VERTEX_SHADER_WORDS]; vertex_registers(store_x_vertex, STORE_X_VERTEX_CODE);
+    store_x_vertex[2] = 0x43; store_x_vertex[3] = 12 << 1;
+    const uint32_t store_x_selectors[] = {4, DST_XYZW, 6};
+    for (unsigned i = 0; i < sizeof store_x_selectors / sizeof store_x_selectors[0]; ++i) {
+        uint64_t buffer = 400 + i; uint32_t destination[4]; descriptor(destination, at(FORMAT_WRITES));
+        destination[3] = store_x_selectors[i] | 4u << 12 | 4u << 15;
+        memset(format_writes, 0, 4 * sizeof *format_writes);
+        size = record_setup(buffer, at(0x920000), 16, 16, 0, scale, translate, COLORS);
+        CHECK(rt_render_record_vertex_shader(buffer, size, store_x_vertex, error, sizeof error) == 0); size += 0x10;
+        CHECK(rt_render_record_user_data(buffer, size, RT_STAGE_VERTEX, 8, destination, 4, error, sizeof error) == 0); size += 0x10;
+        CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
+        if (i == 2) {
+            expect_error(x, buffer, size, "1-component buffer store");
+            CHECK(format_writes[0] == 0 && format_writes[1] == 0 && format_writes[2] == 0 && format_writes[3] == 0);
+        } else if (!run(x, buffer, size)) {
+            CHECK(format_writes[0] == 0x13572468 && format_writes[1] == 0x13572468 &&
+                format_writes[2] == 0x13572468 && format_writes[3] == 0);
+            check_gradient(x, at(0x920000), 16, 16, 0);
+        }
+        scenarios++;
+    }
+
     /* Fragment-stage format swizzles, reserved-selector stops and cached recovery. */
     for (unsigned f = 0; f < 5; ++f) {
         const uint64_t buffer = 320 + f;

@@ -152,7 +152,8 @@ and zero/one selectors; packed stores use the inverse component mapping. The uns
 itself leaves its destination untouched; other shader accesses and attachment writes may already
 have run. Scalar VCC half writes that leave a draw-stage lane mask unknown also return a named
 runtime stop. Each subsequent draw resets the word. Whole 32-bit uint, sint and float formats,
-and supported packed stores, retain the common translator's semantics.
+and supported packed stores, retain the common translator's semantics. A whole-component store
+checks the selectors for the format's real components; selectors beyond them do not affect it.
 
 A GPU timeout or device failure makes the executor unusable; completion retains
 the pool and stop word until in-flight GPU work finishes.
