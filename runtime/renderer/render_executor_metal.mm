@@ -293,7 +293,8 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         result = gcn_translate_vertex(words, available, &layout, &spirv, &count, reason, sizeof reason);
     } else {
-        /* shader_profile admits only perspective-center barycentrics in VGPR0/1, with no position inputs. */
+        /* Only perspective-center barycentrics occupy VGPR0/1. Image bindings stay empty,
+           so image instructions stop translation before any GPU access. */
         gcn_pixel_layout layout{};
         layout.user_sgprs = user; layout.push_constant_offset = USER_BYTES;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;

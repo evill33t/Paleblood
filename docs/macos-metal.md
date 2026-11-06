@@ -134,7 +134,8 @@ own `MAX_SIZE`, and other indexed packet kinds are rejected.
 
 Unsupported formats, shader instructions, shader inputs, layered/multisampled targets and
 target reallocations return a named error. Blending, depth and unrecorded state remain outside
-this profile. Storage images are not bound by this draw backend; texture sampling and
+this profile. Storage and sampled image bindings stay empty in this draw backend;
+`image_load` and `image_load_mip` return named translation errors. Texture sampling and
 fetch-shader calls remain unsupported by the shared translator. Rectangle lists need a geometry
 expansion path and are rejected; compute shader bindings and dispatch events are also rejected
 explicitly by this draw-only backend.
@@ -161,7 +162,8 @@ shared-memory updates, signed/exclusive and empty scissors, nontrivial 16/32-bit
 address forms, pool-end index reads, zero-count draws, index updates, placed-shader ordering and
 buffer isolation, submission resets, null pixel shaders, 40-bit descriptor bases, descriptor
 formats and swizzles in both stages, pool-end scalar loads with constant selectors, skipped-store
-canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unsupported compute/rect
+canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unbound pixel-image
+operations, unsupported compute/rect
 events, readback bounds and mapping lifetime.
 It fails if no suitable GPU exists.
 Hosted CI compiles this code for ARM64 and x86-64; it does not run these GPU checks. A successful

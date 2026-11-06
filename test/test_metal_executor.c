@@ -20,6 +20,7 @@ enum { POOL_SIZE = 4 << 20, VERTEX_CODE = 0x1000, PIXEL_CODE = 0x2000,
        TWO_PIXEL_CODE = 0xa000, FLOAT_PIXEL_CODE = 0xb000, FORMAT_VERTEX_CODE = 0xc000,
        FORMAT_STORE_CODE = 0xd000, FORMAT_PIXEL_CODE = 0xe000, COMPUTE_CODE = 0xf000,
        POSITION_PIXEL_CODE = 0x18000, VCC_VERTEX_CODE = 0x19000, VCC_PIXEL_CODE = 0x1a000, QUAD_PIXEL_CODE = 0x1b000,
+       IMAGE_PIXEL_CODE = 0x1c000, IMAGE_MIP_PIXEL_CODE = 0x1d000,
        CORNERS = 0x10000, COLORS = 0x10100, SOLID_COLORS = 0x10200, VERTEX_WRITES = 0x11000,
        INDEX_CORNERS = 0x12000, INDEX_COLORS = 0x13000, INDICES16 = 0x14000, INDICES32 = 0x14100,
        FORMAT_WRITES = 0x17000 };
@@ -231,6 +232,8 @@ int main(void)
     memcpy(pool + VCC_VERTEX_CODE, vertex_vcc_unknown, sizeof vertex_vcc_unknown);
     memcpy(pool + VCC_PIXEL_CODE, pixel_vcc_unknown, sizeof pixel_vcc_unknown);
     memcpy(pool + QUAD_PIXEL_CODE, pixel_whole_quad, sizeof pixel_whole_quad);
+    memcpy(pool + IMAGE_PIXEL_CODE, pixel_unbound_image, sizeof pixel_unbound_image);
+    memcpy(pool + IMAGE_MIP_PIXEL_CODE, pixel_unbound_image_mip, sizeof pixel_unbound_image_mip);
     const float corners[3][4] = {{-1, -1, 0, 1}, {3, -1, 0, 1}, {-1, 3, 0, 1}};
     const float colors[3][4] = {{0, 0, 0.25f, 1}, {2, 0, 0.25f, 1}, {0, 2, 0.25f, 1}};
     const float solid[3][4] = {{0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}};
@@ -1026,6 +1029,18 @@ int main(void)
     CHECK(rt_render_record_draw_auto(370, size, 3, error, sizeof error) == 0); size += 0x10;
     expect_error(x, 370, size, "whole-quad shader operations are outside the Metal draw profile");
     scenarios++;
+
+    /* Constant coordinates reach the missing-image-binding gate without position inputs or GPU image allocation. */
+    const unsigned unbound_images[] = {IMAGE_PIXEL_CODE, IMAGE_MIP_PIXEL_CODE};
+    for (unsigned i = 0; i < sizeof unbound_images / sizeof unbound_images[0]; ++i) {
+        uint64_t buffer = 380 + i; uint32_t pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(pixel, unbound_images[i]);
+        pixel[3] = 8 << 1; pixel[5] = 9; pixel[8] = 0;
+        size = record_setup(buffer, at(0x930000), 16, 16, 0, scale, translate, COLORS);
+        CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0); size += 0x10;
+        CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
+        expect_error(x, buffer, size, i ? "image_load_mip: the image whose descriptor" : "image_load: the image whose descriptor");
+        scenarios++;
+    }
 
     /* New upstream compute events and rectangle lists never silently succeed in a draw-only backend. */
     const uint64_t compute_buffer = 0xc1000000;

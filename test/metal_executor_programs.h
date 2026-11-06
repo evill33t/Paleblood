@@ -108,4 +108,23 @@ static const uint32_t pixel_whole_quad[] = {
     0xbf810000, /* s_endpgm                                */
 };
 
+static const uint32_t pixel_unbound_image[] = {
+    0x7e040280, /* v_mov_b32_e32 v2, 0                     */
+    0x7e060280, /* v_mov_b32_e32 v3, 0                     */
+    0xf0000f00, 0x00000402, /* image_load v[4:7], v[2:3], s[0:7] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0)                      */
+    0xf800180f, 0x07060504, /* exp mrt0, v4, v5, v6, v7 done vm        */
+    0xbf810000, /* s_endpgm                                */
+};
+
+static const uint32_t pixel_unbound_image_mip[] = {
+    0x7e040280, /* v_mov_b32_e32 v2, 0                     */
+    0x7e060280, /* v_mov_b32_e32 v3, 0                     */
+    0x7e080280, /* v_mov_b32_e32 v4, 0                     */
+    0xf0040f00, 0x00000502, /* image_load_mip v[5:8], v[2:4], s[0:7] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0)                      */
+    0xf800180f, 0x08070605, /* exp mrt0, v5, v6, v7, v8 done vm        */
+    0xbf810000, /* s_endpgm                                */
+};
+
 #endif
