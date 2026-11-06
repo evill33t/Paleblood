@@ -2,7 +2,7 @@
 // Set INDEX_BASE from the aligned low 40 address bits used by the GPU library.
 #include "command_reservation.h"
 #include "index_state.h"
-#include "index_observe.h"
+#include "packet_observation.h"
 
 extern "C" void bb_render_set_index_base(render::PacketBuffer *commands, uint64_t address)
 {
@@ -14,7 +14,7 @@ extern "C" void bb_render_set_index_base(render::PacketBuffer *commands, uint64_
     constexpr uint32_t word_bits = 32;
     uintptr_t cursor;
     if (!reserve_words(commands, required_words, cursor)) return;
-    const IndexObservation observation = observe_index_call(commands, cursor);
+    const PacketObservation observation = observe_packet(commands, cursor);
     auto *packet = reinterpret_cast<IndexBasePacket *>(cursor);
     packet->header.set(index_base_header);
     packet->low.set(static_cast<uint32_t>(address) & aligned_low_word);
