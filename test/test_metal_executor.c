@@ -944,8 +944,8 @@ int main(void)
     CHECK(rt_render_record_color_target(12, 0x70, 1, extra, error, sizeof error) == 0);
     CHECK(rt_render_record_draw_auto(12, 0x80, 3, error, sizeof error) == 0);
     expect_error(x, 12, 0x90, "beyond slot 0");
-    /* Restart, then disable the extra slot before the next draw. */
-    size = record_draw(12, at(0x370000), 16, 16, 0, scale, translate, COLORS);
+    /* Repair the retained extra slot before the next draw, without resetting other state. */
+    size = record_setup(12, at(0x370000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_color_target(12, 0x70, 1, extra, error, sizeof error) == 0);
     CHECK(rt_render_record_color_target(12, 0x80, 1, NULL, error, sizeof error) == 0);
     CHECK(rt_render_record_draw_auto(12, 0x90, 3, error, sizeof error) == 0);
@@ -997,10 +997,11 @@ int main(void)
     scenarios++;
     rt_executor_reset(x);
 
-    /* The next ordinary record also resets a submitted list, even at a larger offset. */
+    /* Recorder reuse drops old setup calls; reset makes accidental replay observable. */
     const uint64_t reused_buffer = 0xc0e00000;
     size = record_draw(reused_buffer, at(0x830000), 16, 16, 0, scale, translate, COLORS);
     if (!run(x, reused_buffer, size)) check_gradient(x, at(0x830000), 16, 16, 0);
+    rt_executor_reset(x);
     CHECK(rt_render_record_draw_auto(reused_buffer, 0x200, 3, error, sizeof error) == 0);
     expect_error(x, reused_buffer, 0x210, "no color target");
     scenarios++;
