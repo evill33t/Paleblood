@@ -127,8 +127,9 @@ applying that bound at the effective shifted base is an inference from the two d
 PS4 GPU measurement. The initial profile accepts `index_count <= MAX_SIZE`, independently of
 the starting offset, and rejects draws requiring DMA zero filling. Public evidence has not
 established whether a direct draw changes the CP's saved `INDEX_BASE`: a later nonempty offset
-draw therefore requires a fresh explicit base event. The executor retains the raw state and last
-programmed DMA bound without guessing that shadow-state transition.
+draw therefore requires a fresh explicit base event. The canonical call record retains the raw
+index events. Metal does not stage `INDEX_BUFFER_SIZE`: both supported draw packets supply their
+own `MAX_SIZE`, and other indexed packet kinds are rejected.
 
 Unsupported formats, shader instructions, shader inputs, layered/multisampled targets and
 target reallocations return a named error. Blending, depth and unrecorded state remain outside

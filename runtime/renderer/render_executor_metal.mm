@@ -76,9 +76,9 @@ struct MetalState {
     bool blend_set = false, depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
     uint32_t scissor_tl = 0, scissor_br = 0;
     bool scissor_tl_set = false, scissor_br_set = false;
-    uint32_t index_type = 0, index_buffer_size = 0, last_dma_max_size = 0;
+    uint32_t index_type = 0;
     uint64_t index_base = 0;
-    bool index_type_set = false, index_base_set = false, index_buffer_size_set = false;
+    bool index_type_set = false, index_base_set = false;
     bool index_base_current = false;
 };
 /* Own the new mapping until Metal has accepted it, including Objective-C exceptions. */
@@ -470,7 +470,6 @@ static int draw_indexed(rt_executor *x, MetalState &state, uint32_t header, uint
     if (header & PM4_PREDICATE) return failed(error, size, "predicated indexed draws are not supported");
     if (header != (use_index_base ? DRAW_INDEX_OFFSET_2_HEADER : DRAW_INDEX_2_HEADER))
         return failed(error, size, "unsupported indexed packet header");
-    state.last_dma_max_size = maximum;
     /* Public evidence does not settle the direct packet's effect on the CP's saved INDEX_BASE.
        Require a fresh explicit base before a later nonempty offset draw instead of guessing. */
     if (!use_index_base) state.index_base_current = false;
@@ -542,8 +541,9 @@ extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, 
                     case RT_CALL_INDEX_BASE:
                         state.index_base = call.u.index_base; state.index_base_set = true; state.index_base_current = true; break;
                     case RT_CALL_INDEX_BUFFER_SIZE:
-                        state.index_buffer_size = call.u.index_buffer_size; state.index_buffer_size_set = true;
-                        state.last_dma_max_size = call.u.index_buffer_size; break;
+                        /* The supported _2 draw packets carry their own MAX_SIZE. Other indexed
+                           packet kinds are rejected, so this recorded state has no consumer here. */
+                        break;
                     case RT_CALL_DRAW_AUTO: {
                         if (check_state(state, error, error_size)) return -1;
                         if (draw(x, state, call.u.draw_auto.index_count, error, error_size)) return -1;
