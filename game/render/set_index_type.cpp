@@ -2,7 +2,7 @@
 // Set the raw INDEX_TYPE word used by later indexed draws.
 #include "command_reservation.h"
 #include "index_state.h"
-#include "index_observe.h"
+#include "packet_observation.h"
 
 extern "C" void bb_render_set_index_type(render::PacketBuffer *commands, uint32_t value)
 {
@@ -11,7 +11,7 @@ extern "C" void bb_render_set_index_type(render::PacketBuffer *commands, uint32_
     constexpr uint32_t index_type_header = 0xc0002a00;
     uintptr_t cursor;
     if (!reserve_words(commands, required_words, cursor)) return;
-    const IndexObservation observation = observe_index_call(commands, cursor);
+    const PacketObservation observation = observe_packet(commands, cursor);
     auto *packet = reinterpret_cast<IndexWordPacket *>(cursor);
     packet->header.set(index_type_header);
     packet->value.set(value);
