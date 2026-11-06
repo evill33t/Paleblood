@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Owned query callbacks and packets exercise the loaded indexed writers without an executable.
 #include "../command_flags.h"
-#include "../indexed_draw.h"
+#include "../draw_index.h"
 #include "runtime/guest.h"
 #include "runtime/render_calls.h"
 
@@ -306,8 +306,8 @@ int main(int argc, char **argv)
     if (argc != argument_count) return 1;
     void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!library) { std::fprintf(stderr, "%s\n", dlerror()); return 1; }
-    draw_direct = reinterpret_cast<Direct>(dlsym(library, "bb_render_draw_indexed"));
-    draw_offset = reinterpret_cast<Offset>(dlsym(library, "bb_render_draw_indexed_offset"));
+    draw_direct = reinterpret_cast<Direct>(dlsym(library, "bb_render_draw_index"));
+    draw_offset = reinterpret_cast<Offset>(dlsym(library, "bb_render_draw_index_offset"));
     auto **image = static_cast<unsigned char **>(dlsym(library, "rt_image"));
     CHECK(draw_direct && draw_offset && image);
     if (draw_direct && draw_offset && image) {

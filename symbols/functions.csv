@@ -64,8 +64,8 @@ address,size,name,system,status,notes
 0x01473750,124,render_set_guard_band_discard_adjust,render,edge-verified,Write vertical then horizontal guard-band discard adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
 0x01473fe0,90,render_set_vgt_primitive_type,render,edge-verified,Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE.
 0x014741b0,156,render_emit_draw_index_auto,render,edge-verified,Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet.
-0x01474360,189,render_draw_indexed,render,replaced,Emit DRAW_INDEX_2 with a full high address word and aligned low word; append a user-PA trace marker or NOP
-0x01474420,176,render_draw_indexed_offset,render,replaced,Emit DRAW_INDEX_OFFSET_2 from independent DWORD offset and count; preserve live cursor additions and the NOP publication path
+0x01474360,189,render_draw_index,render,replaced,Emit DRAW_INDEX_2 with a full high address word and aligned low word; append a user-PA trace marker or NOP
+0x01474420,176,render_draw_index_offset,render,replaced,Emit DRAW_INDEX_OFFSET_2 from independent DWORD offset and count; preserve live cursor additions and the NOP publication path
 0x01475270,76,render_set_index_type,render,replaced,Emit the raw INDEX_TYPE word before indexed draws; DWORD capacity and low-byte callback acceptance
 0x014752c0,92,render_set_index_base,render,replaced,Emit INDEX_BASE from the aligned low 40 address bits; reload the cursor after callback acceptance
 0x01475320,76,render_set_index_buffer_size,render,replaced,Emit the raw INDEX_BUFFER_SIZE word before indexed draws; DWORD capacity and live cursor publication
