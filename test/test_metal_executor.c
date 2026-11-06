@@ -22,6 +22,7 @@ enum { POOL_SIZE = 4 << 20, VERTEX_CODE = 0x1000, PIXEL_CODE = 0x2000,
        POSITION_PIXEL_CODE = 0x18000, VCC_VERTEX_CODE = 0x19000, VCC_PIXEL_CODE = 0x1a000, QUAD_PIXEL_CODE = 0x1b000,
        IMAGE_PIXEL_CODE = 0x1c000, IMAGE_MIP_PIXEL_CODE = 0x1d000,
        SAMPLE_PIXEL_CODE = 0x1e000, MEMORY_IMAGE_PIXEL_CODE = 0x1f000,
+       FETCH_CALLEE_CODE = 0x26000, FETCH_CALLER_CODE = 0x27000, FETCH_DESCRIPTOR_TABLE = 0x25000,
        CORNERS = 0x10000, COLORS = 0x10100, SOLID_COLORS = 0x10200, VERTEX_WRITES = 0x11000,
        INDEX_CORNERS = 0x12000, INDEX_COLORS = 0x13000, INDICES16 = 0x14000, INDICES32 = 0x14100,
        FORMAT_WRITES = 0x17000 };
@@ -237,6 +238,8 @@ int main(void)
     memcpy(pool + IMAGE_MIP_PIXEL_CODE, pixel_unbound_image_mip, sizeof pixel_unbound_image_mip);
     memcpy(pool + SAMPLE_PIXEL_CODE, pixel_unbound_sample, sizeof pixel_unbound_sample);
     memcpy(pool + MEMORY_IMAGE_PIXEL_CODE, pixel_unbound_memory_image, sizeof pixel_unbound_memory_image);
+    memcpy(pool + FETCH_CALLEE_CODE, fetch_position_color, sizeof fetch_position_color);
+    memcpy(pool + FETCH_CALLER_CODE, vertex_calling_fetch, sizeof vertex_calling_fetch);
     const float corners[3][4] = {{-1, -1, 0, 1}, {3, -1, 0, 1}, {-1, 3, 0, 1}};
     const float colors[3][4] = {{0, 0, 0.25f, 1}, {2, 0, 0.25f, 1}, {0, 2, 0.25f, 1}};
     const float solid[3][4] = {{0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}};
@@ -764,6 +767,7 @@ int main(void)
         {0xa1e0, 0x40000000, "blending"}, {0xa200, 2, "depth or stencil"},
         {0xa202, 0, "colour mode"}, {0xa08e, 7, "write mask"},
         {0xc242, 5, "primitive type"}, {0xa000, 0, "does not interpret"},
+        {0xc242, 6, "primitive type"}, {0xa010, 0, "does not interpret"},
     };
     for (unsigned i = 0; i < sizeof unsupported_registers / sizeof *unsupported_registers; ++i) {
         uint64_t buffer = 21 + i;
@@ -1055,6 +1059,22 @@ int main(void)
         expect_error(x, buffer, size, unbound_images[i].reason);
         scenarios++;
     }
+
+    /* A valid owned fetch address and table still require an explicitly bound callee. */
+    uint32_t fetch_descriptors[8]; descriptor(fetch_descriptors, at(CORNERS)); descriptor(fetch_descriptors + 4, at(COLORS));
+    fetch_descriptors[3] = fetch_descriptors[7] = DST_XYZW | 7u << 12 | 14u << 15;
+    memcpy(pool + FETCH_DESCRIPTOR_TABLE, fetch_descriptors, sizeof fetch_descriptors);
+    uint32_t fetch_vertex[RT_VERTEX_SHADER_WORDS]; vertex_registers(fetch_vertex, FETCH_CALLER_CODE);
+    fetch_vertex[2] = 0x42; fetch_vertex[3] = 4 << 1;
+    const uint64_t fetch_address = at(FETCH_CALLEE_CODE), table_address = at(FETCH_DESCRIPTOR_TABLE);
+    const uint32_t fetch_user[4] = {(uint32_t)fetch_address, (uint32_t)(fetch_address >> 32),
+        (uint32_t)table_address, (uint32_t)(table_address >> 32)};
+    size = record_setup(390, at(0x930000), 16, 16, 0, scale, translate, COLORS);
+    CHECK(rt_render_record_vertex_shader(390, size, fetch_vertex, error, sizeof error) == 0); size += 0x10;
+    CHECK(rt_render_record_user_data(390, size, RT_STAGE_VERTEX, 0, fetch_user, 4, error, sizeof error) == 0); size += 0x10;
+    CHECK(rt_render_record_draw_auto(390, size, 3, error, sizeof error) == 0); size += 0x10;
+    expect_error(x, 390, size, "s_swappc_b64: a call with no callee given");
+    scenarios++;
 
     /* New upstream compute events and rectangle lists never silently succeed in a draw-only backend. */
     const uint64_t compute_buffer = 0xc1000000;

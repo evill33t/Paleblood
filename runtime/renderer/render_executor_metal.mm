@@ -288,6 +288,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     uint32_t *spirv = nullptr; size_t count = 0; char reason[256] = {};
     int result;
     if (vertex) {
+        /* Fetch callees stay unbound in this profile, so a call stops translation by name. */
         gcn_vertex_layout layout{};
         layout.user_sgprs = user; layout.output_control = output;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;

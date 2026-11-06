@@ -139,8 +139,9 @@ Unsupported formats, shader instructions, shader inputs, layered/multisampled ta
 target reallocations return a named error. Blending, depth and unrecorded state remain outside
 this profile. Image and sampler bindings stay empty in this draw backend;
 `image_load`, `image_load_mip` and `image_sample` return named translation errors, including
-image descriptors loaded from memory. Fetch-shader calls remain unsupported by the shared translator. Rectangle lists need a geometry
-expansion path and are rejected; compute shader bindings and dispatch events are also rejected
+image descriptors loaded from memory. Fetch-shader callees are also unbound in this backend:
+`s_swappc_b64` returns a named translation error. Triangle strips and depth-target registers
+remain outside this profile. Rectangle lists need a geometry expansion path and are rejected; compute shader bindings and dispatch events are also rejected
 explicitly by this draw-only backend.
 
 Descriptor-format accesses use the common translator's runtime stop channel: the executor owns
@@ -166,7 +167,8 @@ address forms, pool-end index reads, zero-count draws, index updates, placed-sha
 buffer isolation, submission resets, null pixel shaders, 40-bit descriptor bases, descriptor
 formats and swizzles in both stages, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unbound pixel-image
-and sampling operations, descriptors loaded from memory, unsupported compute/rect
+and sampling operations, descriptors loaded from memory, unbound fetch calls, strip/depth-target
+guards, unsupported compute/rect
 events, readback bounds and mapping lifetime.
 It fails if no suitable GPU exists.
 Hosted CI compiles this code for ARM64 and x86-64; it does not run these GPU checks. A successful
