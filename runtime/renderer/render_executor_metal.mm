@@ -95,7 +95,7 @@ static int failed(char *error, size_t size, const char *format, ...)
     return -1;
 }
 
-/* The same opaque-triangle profile as the Vulkan executor, using AMD GFX7 register fields. */
+/* Validate the supported opaque-triangle profile using AMD GFX7 register fields. */
 enum { CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
        DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
        PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d };
