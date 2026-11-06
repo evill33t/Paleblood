@@ -74,7 +74,11 @@ ctest --test-dir build-metal-draw -R '^metal_executor$' --output-on-failure
 The optional Metal executor selects the headless display, no host audio, and the no-host-input
 provider for boot wiring. These build targets do not qualify a full macOS boot or host controller input.
 
-The executor processes recorded calls in submission order, with fresh state per submitted buffer.
+The executor processes recorded calls in submission order. Registers, targets, shaders, user data,
+scissors and index state carry across submitted buffers until an explicit `rt_executor_reset`.
+Reset forgets that state while keeping completed target pixels and compiled caches. A rejected
+call does not roll back earlier accepted state changes; later submissions must repair or reset
+unsupported state. Reset does not revive an executor poisoned by a device failure.
 Live system-call shader bindings are placed by their command-buffer write address; the common
 recorder joins them to the submitted buffer at their byte offsets. After a submission, the next
 ordinary record or placed binding starts a new use of that buffer, even if its offset increases.
@@ -161,10 +165,10 @@ The real-device test uses only owned synthetic GFX7 programs, descriptors and da
 interpolated triangles, two-parameter interfaces and their capacity guards, all eight clip
 distances, FP16 and float32 color exports, clip-bound and resource-header guards, buffer loads
 through user SGPRs, independent pixel user data, channel
-order, rectangular targets, both viewport Y directions, submission boundaries, state resets,
+order, rectangular targets, both viewport Y directions, submission boundaries, cross-buffer masked indexed draws and explicit state resets,
 shared-memory updates, signed/exclusive and empty scissors, nontrivial 16/32-bit indices in both
 address forms, pool-end index reads, zero-count draws, index updates, placed-shader ordering and
-buffer isolation, submission resets, null pixel shaders, 40-bit descriptor bases, descriptor
+recorder buffer isolation, recorder submission resets, null pixel shaders, 40-bit descriptor bases, descriptor
 formats and swizzles in both stages, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unbound pixel-image
 and sampling operations, descriptors loaded from memory, unbound fetch calls, strip/depth-target

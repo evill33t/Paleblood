@@ -206,6 +206,69 @@ static void check_two_parameters(rt_executor *x, uint64_t target)
     CHECK(bad == 0);
 }
 
+/* A state-only buffer feeds indexed draws in later buffers, including error and reset boundaries. */
+static void check_persistent_state(rt_executor *x, unsigned char *pool)
+{
+    const uint64_t target = at(0xd00000), setup_buffer = 1000, draw_buffer = 1001;
+    const uint64_t unmask_buffer = 1002, reject_buffer = 1003, retained_buffer = 1004, fresh_buffer = 1005;
+    uint32_t vertex[RT_VERTEX_SHADER_WORDS], words[4];
+    uint32_t *markers = (uint32_t *)(pool + VERTEX_WRITES);
+    char error[1024] = "";
+    rt_executor_reset(x);
+    uint32_t size = record_index_setup(setup_buffer, target, 1);
+    vertex_registers(vertex, STORE_VERTEX_CODE); vertex[2] = 0x43; vertex[3] = 12 << 1;
+    CHECK(rt_render_record_vertex_shader(setup_buffer, size, vertex, error, sizeof error) == 0); size += 0x10;
+    descriptor(words, at(VERTEX_WRITES));
+    CHECK(rt_render_record_user_data(setup_buffer, size, RT_STAGE_VERTEX, 8, words, 4, error, sizeof error) == 0); size += 0x10;
+    CHECK(rt_render_record_index_base(setup_buffer, size, at(INDICES32), error, sizeof error) == 0); size += 0x10;
+    CHECK(rt_render_record_register(setup_buffer, size, 0xa08e, 0, error, sizeof error) == 0); size += 0x10;
+    run(x, setup_buffer, size);
+    uint32_t untouched = 0xdeadbeef;
+    CHECK(rt_executor_read_target(x, target, &untouched, 1, 1, error, sizeof error) == -1 && untouched == 0xdeadbeef);
+    memset(markers, 0, 7 * sizeof *markers);
+    CHECK(rt_render_record_draw_indexed_offset(draw_buffer, 0x10, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
+    if (!run(x, draw_buffer, 0x20)) {
+        CHECK(markers[0] == 0 && markers[1] == 0 && markers[2] == 0 && markers[6] == 0);
+        CHECK(markers[3] == 0x13572468 && markers[4] == 0x13572468 && markers[5] == 0x13572468);
+        check_clipped_gradient(x, target, 0, 0, 0, 0);
+    }
+    scenarios++;
+
+    /* Only the write mask changes; shaders, SGPRs, viewport and 32-bit index state still apply. */
+    CHECK(rt_render_record_register(unmask_buffer, 0x10, 0xa08e, 15, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_indexed_offset(unmask_buffer, 0x20, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
+    if (!run(x, unmask_buffer, 0x30)) check_gradient(x, target, 16, 16, 0);
+    scenarios++;
+
+    /* An unsupported event stops in order; the preceding mask update is not rolled back. */
+    CHECK(rt_render_record_register(reject_buffer, 0x10, 0xa08e, 0, error, sizeof error) == 0);
+    CHECK(rt_render_record_register(reject_buffer, 0x20, 0xffff, 0, error, sizeof error) == 0);
+    expect_error(x, reject_buffer, 0x30, "register 0xffff");
+    const float solid[3][4] = {{0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}, {0.75f, 0.125f, 0.5f, 1}};
+    memcpy(pool + INDEX_COLORS + 3 * sizeof solid[0], solid, sizeof solid);
+    memset(markers, 0, 7 * sizeof *markers);
+    CHECK(rt_render_record_draw_indexed_offset(retained_buffer, 0x10, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
+    if (!run(x, retained_buffer, 0x20)) {
+        CHECK(markers[3] == 0x13572468 && markers[4] == 0x13572468 && markers[5] == 0x13572468 && markers[6] == 0);
+        check_gradient(x, target, 16, 16, 0);
+    }
+    scenarios++;
+
+    /* Reset forgets both index state and the masked state, leaving completed pixels intact. */
+    rt_executor_reset(x);
+    expect_error(x, draw_buffer, 0x20, "indexed draw requires INDEX_TYPE");
+    check_gradient(x, target, 16, 16, 0);
+    scenarios++;
+    size = record_index_setup(fresh_buffer, target, 1);
+    CHECK(rt_render_record_index_base(fresh_buffer, size, at(INDICES32), error, sizeof error) == 0); size += 0x10;
+    CHECK(rt_render_record_draw_indexed_offset(fresh_buffer, size, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0); size += 0x10;
+    if (!run(x, fresh_buffer, size)) check_solid(x, target);
+    const float colors[3][4] = {{0, 0, 0.25f, 1}, {2, 0, 0.25f, 1}, {0, 2, 0.25f, 1}};
+    memcpy(pool + INDEX_COLORS + 3 * sizeof colors[0], colors, sizeof colors);
+    scenarios++;
+    rt_executor_reset(x);
+}
+
 int main(void)
 {
     char name[] = "/tmp/paleblood-metal-pool-XXXXXX";
@@ -268,20 +331,24 @@ int main(void)
     uint32_t size = record_draw(1, at(0x100000), 16, 16, 0, scale, translate, COLORS);
     if (!run(x, 1, size)) check_gradient(x, at(0x100000), 16, 16, 0);
     scenarios++;
+    rt_executor_reset(x);
 
     size = record_draw(2, at(0x200000), 16, 16, 1, scale, translate, COLORS);
     if (!run(x, 2, size)) check_gradient(x, at(0x200000), 16, 16, 0);
     scenarios++;
+    rt_executor_reset(x);
 
     const float wide_scale[3] = {16, 8, 1}, wide_translate[3] = {16, 8, 0};
     size = record_draw(3, at(0x300000), 32, 16, 0, wide_scale, wide_translate, COLORS);
     if (!run(x, 3, size)) check_gradient(x, at(0x300000), 32, 16, 0);
     scenarios++;
+    rt_executor_reset(x);
 
     const float negative_y[3] = {8, -8, 1};
     size = record_draw(4, at(0x310000), 16, 16, 0, negative_y, translate, COLORS);
     if (!run(x, 4, size)) check_gradient(x, at(0x310000), 16, 16, 1);
     scenarios++;
+    rt_executor_reset(x);
 
     /* A partial SGPR write changes only the colour descriptor, after the first draw. */
     size = record_draw(5, at(0x320000), 16, 16, 0, scale, translate, COLORS);
@@ -291,6 +358,7 @@ int main(void)
     if (!run(x, 5, size)) check_gradient(x, at(0x320000), 16, 16, 0);
     if (!run(x, 5, 0x90)) check_solid(x, at(0x320000));
     scenarios++;
+    rt_executor_reset(x);
 
     /* Writes through the caller's mapping are visible without re-recording or reopening. */
     size = record_draw(6, at(0x330000), 16, 16, 0, scale, translate, COLORS);
@@ -299,6 +367,7 @@ int main(void)
     memcpy(pool + COLORS, colors, sizeof colors);
     if (!run(x, 6, size)) check_gradient(x, at(0x330000), 16, 16, 0);
     scenarios++;
+    rt_executor_reset(x);
 
     /* The pixel stage has its own user-data range; it must not overwrite vertex descriptors. */
     size = record_draw(15, at(0x3a0000), 16, 16, 0, scale, translate, COLORS);
@@ -311,6 +380,7 @@ int main(void)
     CHECK(rt_render_record_draw_auto(15, 0x90, 3, error, sizeof error) == 0);
     if (!run(x, 15, 0xa0)) check_solid(x, at(0x3a0000));
     scenarios++;
+    rt_executor_reset(x);
 
     /* sRGB encoding must occur once, and channel order must still be BGRA on readback. */
     size = record_draw(17, at(0x3c0000), 16, 16, 0, scale, translate, COLORS);
@@ -331,8 +401,9 @@ int main(void)
         CHECK(bad == 0);
     }
     scenarios++;
+    rt_executor_reset(x);
 
-    /* Calls at the submitted boundary do not run. Another buffer has no inherited state. */
+    /* Calls at the submitted boundary do not run; accepted state carries into the next buffer. */
     size = record_draw(7, at(0x340000), 16, 16, 0, scale, translate, COLORS);
     if (!run(x, 7, 0x60)) {
         uint32_t guard = 0xdeadbeef;
@@ -341,14 +412,19 @@ int main(void)
     }
     if (!run(x, 7, size)) check_gradient(x, at(0x340000), 16, 16, 0);
     CHECK(rt_render_record_draw_auto(8, 0x10, 3, error, sizeof error) == 0);
+    if (!run(x, 8, 0x20)) check_gradient(x, at(0x340000), 16, 16, 0);
+    rt_executor_reset(x);
     expect_error(x, 8, 0x20, "no color target");
+    check_gradient(x, at(0x340000), 16, 16, 0);
     scenarios++;
+    rt_executor_reset(x);
 
-    /* Restarting a command buffer drops its earlier calls; state also resets on each run. */
+    /* Replacing a buffer drops its old calls; an explicit target disable prevents drawing. */
     CHECK(rt_render_record_color_target(7, 0, 0, NULL, error, sizeof error) == 0);
     CHECK(rt_render_record_draw_auto(7, 0x10, 3, error, sizeof error) == 0);
     expect_error(x, 7, 0x20, "no color target");
     scenarios++;
+    rt_executor_reset(x);
 
     /* A small viewport leaves clear pixels outside it, including on a nonsquare surface. */
     const float sub_scale[3] = {8, 4, 1}, sub_translate[3] = {16, 8, 0};
@@ -366,6 +442,7 @@ int main(void)
         CHECK(bad == 0);
     }
     scenarios++;
+    rt_executor_reset(x);
 
     /* Later draws load existing pixels and apply state only from their recorded position. */
     size = record_draw(18, at(0x3e0000), 32, 16, 0, wide_scale, wide_translate, COLORS);
@@ -388,6 +465,7 @@ int main(void)
         CHECK(bad == 0);
     }
     scenarios++;
+    rt_executor_reset(x);
 
     uint32_t cropped[8 * 3];
     CHECK(rt_executor_read_target(x, at(0x100000), cropped, 8, 3, error, sizeof error) == 0);
@@ -399,8 +477,9 @@ int main(void)
     }
     CHECK(crop_bad == 0);
     scenarios++;
+    rt_executor_reset(x);
 
-    /* Generic register and instance events retain the same supported profile as Vulkan. */
+    /* Generic register and instance events validate the supported opaque-triangle profile. */
     size = record_setup(19, at(0x3f0000), 16, 16, 0, scale, translate, COLORS);
     const uint32_t registers[][2] = {{0xa1e0, 0}, {0xa200, 0}, {0xa202, 0xcc0010},
         {0xa08e, 15}, {0xc242, 4}, {0xa10b, 0xffffffff}};
@@ -412,6 +491,7 @@ int main(void)
     CHECK(rt_render_record_draw_auto(19, size, 3, error, sizeof error) == 0); size += 0x10;
     if (!run(x, 19, size)) check_gradient(x, at(0x3f0000), 16, 16, 0);
     scenarios++;
+    rt_executor_reset(x);
 
     size = record_setup(20, at(0x400000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_register(20, size, 0xa08e, 0, error, sizeof error) == 0); size += 0x10;
@@ -424,6 +504,7 @@ int main(void)
     }
     if (!run(x, 20, size)) check_gradient(x, at(0x400000), 16, 16, 0);
     scenarios++;
+    rt_executor_reset(x);
 
     /* Disabling colour writes cannot suppress observable vertex buffer stores. */
     size = record_draw(40, at(0x600000), 16, 16, 0, scale, translate, COLORS);
@@ -450,6 +531,7 @@ int main(void)
     }
     if (!run(x, 40, size)) check_solid(x, at(0x600000));
     scenarios++;
+    rt_executor_reset(x);
 
     /* Raw index state is retained, but an Auto draw does not read an index buffer. */
     size = record_setup(41, at(0x610000), 16, 16, 0, scale, translate, COLORS);
@@ -459,6 +541,7 @@ int main(void)
     CHECK(rt_render_record_draw_auto(41, size, 3, error, sizeof error) == 0); size += 0x10;
     if (!run(x, 41, size)) check_gradient(x, at(0x610000), 16, 16, 0);
     scenarios++;
+    rt_executor_reset(x);
 
     const float invalid_scales[][3] = {{INFINITY, 8, 1}, {FLT_MAX, 8, 1}};
     const char *invalid_reasons[] = {"non-finite", "coordinate range"};
@@ -468,6 +551,7 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         expect_error(x, buffer, size, invalid_reasons[i]);
         scenarios++;
+        rt_executor_reset(x);
     }
 
     /* The translator initializes only the vertex-ID input; none of the extra hardware profiles is modeled. */
@@ -480,6 +564,7 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         expect_error(x, buffer, size, "vertex input VGPR profile");
         scenarios++;
+        rt_executor_reset(x);
     }
 
     /* Qualify the common pos1 two-plane clip profile, including each independent plane. */
@@ -492,6 +577,7 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         if (!run(x, buffer, size)) check_clipped_gradient(x, target, mask & 1 ? 8 : 0, mask & 2 ? 8 : 0, 16, 16);
         scenarios++;
+        rt_executor_reset(x);
     }
     /* Every clip-distance slot contributes separately, including sparse masks and both export vectors. */
     for (unsigned i = 0; i < 9; ++i) {
@@ -504,6 +590,7 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         if (!run(x, buffer, size)) check_clipped_gradient(x, target, mask & 0x55 ? 8 : 0, mask & 0xaa ? 8 : 0, 16, 16);
         scenarios++;
+        rt_executor_reset(x);
     }
 
     uint32_t two_vertex[RT_VERTEX_SHADER_WORDS], two_pixel[RT_PIXEL_SHADER_WORDS];
@@ -520,6 +607,7 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         if (!run(x, buffer, size)) check_two_parameters(x, at(0x9c0000));
         scenarios++;
+        rt_executor_reset(x);
     }
     /* Cached shader interfaces still enforce smaller declared parameter/interpolant allocations. */
     for (unsigned stage = 0; stage < 2; ++stage) {
@@ -531,6 +619,7 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         expect_error(x, buffer, size, stage == 0 ? "vertex parameter allocation" : "pixel interpolant allocation");
         scenarios++;
+        rt_executor_reset(x);
     }
 
     uint32_t float_pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(float_pixel, FLOAT_PIXEL_CODE);
@@ -541,6 +630,7 @@ int main(void)
     CHECK(rt_render_record_draw_auto(127, size, 3, error, sizeof error) == 0); size += 0x10;
     if (!run(x, 127, size)) check_solid(x, at(0x9d0000));
     scenarios++;
+    rt_executor_reset(x);
 
     /* Clip bounds remain byte-for-byte in the record; only numeric zero (either sign) and one are modeled. */
     const struct { uint32_t zmin, zmax; int supported; } clip_bounds[] = {
@@ -572,6 +662,7 @@ int main(void)
             CHECK(low == clip_bounds[i].zmin && high == clip_bounds[i].zmax);
         }
         scenarios++;
+        rt_executor_reset(x);
     }
 
     /* Change one behavior-bearing register field at a time; unused allocation capacity remains valid. */
@@ -599,6 +690,7 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         expect_error(x, buffer, size, shader_fields[i].reason);
         scenarios++;
+        rt_executor_reset(x);
     }
     /* A supported clip layout still needs its matching position-export format. */
     uint32_t mismatched_clip[RT_VERTEX_SHADER_WORDS]; vertex_registers(mismatched_clip, CLIP_VERTEX_CODE);
@@ -607,6 +699,7 @@ int main(void)
     CHECK(rt_render_record_vertex_shader(180, size, mismatched_clip, error, sizeof error) == 0); size += 0x10;
     CHECK(rt_render_record_draw_auto(180, size, 3, error, sizeof error) == 0); size += 0x10;
     expect_error(x, 180, size, "SPI_SHADER_POS_FORMAT"); scenarios++;
+    rt_executor_reset(x);
 
     /* User data must fit its declared SGPR allocation and the translator's sixteen-word model. */
     for (unsigned stage = 0; stage < 2; ++stage) for (unsigned modeled_range = 0; modeled_range < 2; ++modeled_range) {
@@ -625,6 +718,7 @@ int main(void)
         CHECK(rt_render_record_user_data(buffer, size, RT_STAGE_PIXEL, 0, pixel_words, 4, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         expect_error(x, buffer, size, modeled_range ? "modeled user-data range" : "declared allocation"); scenarios++;
+        rt_executor_reset(x);
     }
 
     /* Both widths and address forms select vertices 3..5 from the shared pool, not Auto 0..2. */
@@ -642,6 +736,7 @@ int main(void)
         size += 0x10;
         if (!run(x, buffer, size)) check_gradient(x, target, 16, 16, 0);
         scenarios++;
+        rt_executor_reset(x);
     }
 
     /* A zero-count packet still submits a pass, and never fetches its unusable address/offset. */
@@ -654,6 +749,7 @@ int main(void)
         size += 0x10;
         if (!run(x, buffer, size)) check_clipped_gradient(x, target, 0, 0, 0, 0);
         scenarios++;
+        rt_executor_reset(x);
     }
 
     /* The last fetched element may end exactly at the pool boundary, for either width. */
@@ -668,6 +764,7 @@ int main(void)
         size += 0x10;
         if (!run(x, buffer, size)) check_gradient(x, target, 16, 16, 0);
         scenarios++;
+        rt_executor_reset(x);
     }
 
     /* Index reads use the current shared bytes, including when the same record is submitted again. */
@@ -679,6 +776,7 @@ int main(void)
     ((uint16_t *)(pool + INDICES16))[2] = 4;
     if (!run(x, 58, size)) check_gradient(x, at(0x780000), 16, 16, 0);
     scenarios++;
+    rt_executor_reset(x);
 
     /* A direct packet's effect on the CP's saved base is unresolved: require a new explicit base. */
     size = record_index_setup(59, at(0x790000), 0);
@@ -697,6 +795,7 @@ int main(void)
     size += 0x10;
     if (!run(x, 59, size)) check_gradient(x, at(0x790000), 16, 16, 0);
     scenarios++;
+    rt_executor_reset(x);
 
     const struct {
         unsigned type; uint32_t header, maximum, count, initiator; uint64_t address; const char *reason;
@@ -724,6 +823,7 @@ int main(void)
         size += 0x10;
         expect_error(x, buffer, size, invalid_indices[i].reason);
         scenarios++;
+        rt_executor_reset(x);
     }
 
     const struct { uint64_t base; uint32_t offset, header; int set_base; const char *reason; } invalid_offsets[] = {
@@ -743,12 +843,14 @@ int main(void)
             invalid_offsets[i].offset, 3, 0, error, sizeof error) == 0); size += 0x10;
         expect_error(x, buffer, size, invalid_offsets[i].reason);
         scenarios++;
+        rt_executor_reset(x);
     }
     size = record_setup(85, at(0x7b0000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_draw_indexed(85, size, draw_indexed_header, 3, at(INDICES16) + 2, 3, 0, error, sizeof error) == 0);
     size += 0x10;
     expect_error(x, 85, size, "requires INDEX_TYPE");
     scenarios++;
+    rt_executor_reset(x);
 
     /* Empty scissoring must not become a software no-op: observe the vertex write directly. */
     size = record_setup(90, at(0x7c0000), 16, 16, 0, scale, translate, COLORS);
@@ -764,6 +866,7 @@ int main(void)
         check_clipped_gradient(x, at(0x7c0000), 0, 0, 0, 0);
     }
     scenarios++;
+    rt_executor_reset(x);
 
     const struct { uint32_t address, value; const char *reason; } unsupported_registers[] = {
         {0xa1e0, 0x40000000, "blending"}, {0xa200, 2, "depth or stencil"},
@@ -779,12 +882,14 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         expect_error(x, buffer, size, unsupported_registers[i].reason);
         scenarios++;
+        rt_executor_reset(x);
     }
     size = record_setup(27, at(0x3f0000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_instances(27, size, 2, error, sizeof error) == 0); size += 0x10;
     CHECK(rt_render_record_draw_auto(27, size, 3, error, sizeof error) == 0); size += 0x10;
     expect_error(x, 27, size, "only one");
     scenarios++;
+    rt_executor_reset(x);
 
     /* Screen scissor fields are signed, clamp negative values, and exclude the bottom/right edge. */
     const struct { int16_t left, top, right, bottom; unsigned l, t, r, b; } scissors[] = {
@@ -803,6 +908,7 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         if (!run(x, buffer, size)) check_clipped_gradient(x, target, scissors[i].l, scissors[i].t, scissors[i].r, scissors[i].b);
         scenarios++;
+        rt_executor_reset(x);
     }
     size = record_setup(38, at(0x580000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_register(38, size, 0xa00c, 0, error, sizeof error) == 0); size += 0x10;
@@ -815,6 +921,7 @@ int main(void)
     CHECK(rt_render_record_draw_auto(38, size, 3, error, sizeof error) == 0); size += 0x10;
     expect_error(x, 38, size, "documented range");
     scenarios++;
+    rt_executor_reset(x);
 
     /* Bounds failures precede readback and preserve the caller's destination. */
     uint32_t guard[4] = {0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef};
@@ -824,6 +931,7 @@ int main(void)
     CHECK(rt_executor_read_target(x, at(0x100000), NULL, 1, 1, error, sizeof error) == -1);
     CHECK(guard[0] == 0xdeadbeef && guard[1] == 0xdeadbeef && guard[2] == 0xdeadbeef && guard[3] == 0xdeadbeef);
     scenarios++;
+    rt_executor_reset(x);
 
     /* Unsupported state and code must fail with a reason, without poisoning valid later draws. */
     size = record_draw(10, at(0x100000), 32, 16, 0, wide_scale, wide_translate, COLORS);
@@ -843,6 +951,7 @@ int main(void)
     CHECK(rt_render_record_draw_auto(12, 0x90, 3, error, sizeof error) == 0);
     if (!run(x, 12, 0xa0)) check_gradient(x, at(0x370000), 16, 16, 0);
     scenarios++;
+    rt_executor_reset(x);
 
     size = record_draw(13, at(0x380000), 16, 16, 0, scale, translate, COLORS);
     const uint64_t outside = at(POOL_SIZE);
@@ -859,6 +968,7 @@ int main(void)
     expect_error(x, 16, 0x90, "pixel shader translation:");
     CHECK(rt_executor_run(NULL, 0, 0, error, sizeof error) == -1);
     scenarios++;
+    rt_executor_reset(x);
 
     /* Live syscall bindings join the submitted buffer by guest address, in byte-offset order. */
     const uint64_t placed_buffer = 0xc0de0000, other_buffer = 0xc0df0000;
@@ -879,11 +989,13 @@ int main(void)
     CHECK(rt_render_record_draw_auto(placed_buffer, 0xa0, 3, error, sizeof error) == 0);
     if (!run(x, placed_buffer, 0xb0)) check_solid(x, at(0x820000));
     scenarios++;
+    rt_executor_reset(x);
 
     /* New placed calls after submission begin a new use, rather than replaying the prior draw. */
     CHECK(rt_render_record_pixel_shader_at(placed_buffer + 0x80, gradient_pixel) == 0);
     if (!run(x, placed_buffer, 0xb0)) check_solid(x, at(0x820000));
     scenarios++;
+    rt_executor_reset(x);
 
     /* The next ordinary record also resets a submitted list, even at a larger offset. */
     const uint64_t reused_buffer = 0xc0e00000;
@@ -892,6 +1004,7 @@ int main(void)
     CHECK(rt_render_record_draw_auto(reused_buffer, 0x200, 3, error, sizeof error) == 0);
     expect_error(x, reused_buffer, 0x210, "no color target");
     scenarios++;
+    rt_executor_reset(x);
 
     const uint64_t no_pixel_buffer = 0xc0f00000;
     const uint32_t no_pixel_shader[RT_PIXEL_SHADER_WORDS] = {0};
@@ -900,6 +1013,7 @@ int main(void)
     CHECK(rt_render_record_draw_auto(no_pixel_buffer, 0x80, 3, error, sizeof error) == 0);
     expect_error(x, no_pixel_buffer, 0x90, "no pixel shader (a depth-only pass)");
     scenarios++;
+    rt_executor_reset(x);
 
     /* Runtime descriptor formats use the real shared stop word in both shader stages. */
     enum { DST_XYZW = 4 | 5 << 3 | 6 << 6 | 7 << 9, DST_ZYXW = 6 | 5 << 3 | 4 << 6 | 7 << 9 };
@@ -919,6 +1033,7 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         if (!run(x, buffer, size)) check_gradient(x, at(0x910000), 16, 16, 0);
         scenarios++;
+        rt_executor_reset(x);
     }
     uint32_t format_vertex[RT_VERTEX_SHADER_WORDS], format_user[12];
     vertex_registers(format_vertex, FORMAT_STORE_CODE); format_vertex[2] = 0x43; format_vertex[3] = 12 << 1;
@@ -950,6 +1065,7 @@ int main(void)
             check_gradient(x, at(0x920000), 16, 16, 0);
         }
         scenarios++;
+        rt_executor_reset(x);
     }
     /* A one-component store uses only its real selector; unused component selectors are irrelevant. */
     uint32_t store_x_vertex[RT_VERTEX_SHADER_WORDS]; vertex_registers(store_x_vertex, STORE_X_VERTEX_CODE);
@@ -972,6 +1088,7 @@ int main(void)
             check_gradient(x, at(0x920000), 16, 16, 0);
         }
         scenarios++;
+        rt_executor_reset(x);
     }
 
     /* Fragment-stage format swizzles, reserved-selector stops and cached recovery. */
@@ -1003,6 +1120,7 @@ int main(void)
             }
         }
         scenarios++;
+        rt_executor_reset(x);
     }
 
     /* A one-component format at the last pool dword: selectors supply zero and float one. */
@@ -1025,6 +1143,7 @@ int main(void)
         }
     }
     scenarios++;
+    rt_executor_reset(x);
 
     /* Position x/y inputs are decoded upstream, but are outside this explicitly barycentric-only profile. */
     const uint32_t positions[] = {0x102, 0x202, 0x302};
@@ -1036,6 +1155,7 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         expect_error(x, buffer, size, "inputs beyond perspective-center barycentrics");
         scenarios++;
+        rt_executor_reset(x);
     }
     /* A scalar VCC half write leaves the lane mask unknown in both draw stages. */
     for (unsigned stage = 0; stage < 2; ++stage) {
@@ -1054,6 +1174,7 @@ int main(void)
         size = record_draw(buffer, at(0x930000), 16, 16, 0, scale, translate, COLORS);
         if (!run(x, buffer, size)) check_gradient(x, at(0x930000), 16, 16, 0);
         scenarios++;
+        rt_executor_reset(x);
     }
     size = record_setup(370, at(0x930000), 16, 16, 0, scale, translate, COLORS);
     uint32_t quad_pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(quad_pixel, QUAD_PIXEL_CODE); quad_pixel[5] = 9; quad_pixel[8] = 0;
@@ -1061,6 +1182,7 @@ int main(void)
     CHECK(rt_render_record_draw_auto(370, size, 3, error, sizeof error) == 0); size += 0x10;
     expect_error(x, 370, size, "whole-quad shader operations are outside the Metal draw profile");
     scenarios++;
+    rt_executor_reset(x);
 
     /* Constant coordinates reach the missing-image-binding gate without position inputs or GPU image allocation. */
     const struct { unsigned code, user_sgprs; int from_memory; const char *reason; } unbound_images[] = {
@@ -1083,6 +1205,7 @@ int main(void)
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
         expect_error(x, buffer, size, unbound_images[i].reason);
         scenarios++;
+        rt_executor_reset(x);
     }
 
     /* A valid owned fetch address and table still require an explicitly bound callee. */
@@ -1100,6 +1223,7 @@ int main(void)
     CHECK(rt_render_record_draw_auto(390, size, 3, error, sizeof error) == 0); size += 0x10;
     expect_error(x, 390, size, "s_swappc_b64: a call with no callee given");
     scenarios++;
+    rt_executor_reset(x);
 
     /* New upstream compute events and rectangle lists never silently succeed in a draw-only backend. */
     const uint64_t compute_buffer = 0xc1000000;
@@ -1109,16 +1233,19 @@ int main(void)
     CHECK(rt_render_record_compute_shader_at(compute_buffer + 0x10, compute) == 0);
     expect_error(x, compute_buffer, 0x20, "compute shaders are outside the Metal draw profile");
     scenarios++;
+    rt_executor_reset(x);
     const uint32_t groups[3] = {1, 1, 1};
     CHECK(rt_render_record_dispatch(330, 0x10, groups, error, sizeof error) == 0);
     expect_error(x, 330, 0x20, "compute dispatches are outside the Metal draw profile");
     scenarios++;
+    rt_executor_reset(x);
     const rt_shader_stage unsupported_stages[] = {RT_STAGE_COMPUTE, RT_STAGE_GEOMETRY, RT_STAGE_EXPORT, RT_STAGE_HULL, RT_STAGE_LOCAL};
     const uint32_t stage_word = 0x12345678;
     for (unsigned i = 0; i < sizeof unsupported_stages / sizeof unsupported_stages[0]; ++i) {
         CHECK(rt_render_record_user_data(332 + i, 0x10, unsupported_stages[i], 0, &stage_word, 1, error, sizeof error) == 0);
         expect_error(x, 332 + i, 0x20, "only vertex and pixel user data");
         scenarios++;
+        rt_executor_reset(x);
     }
     size = record_setup(331, at(0xc00000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_register(331, size, 0xc242, 17, error, sizeof error) == 0); size += 0x10;
@@ -1129,6 +1256,9 @@ int main(void)
     CHECK(unattached == 0xdeadbeef);
     check_solid(x, at(0x820000)); /* Neither rejected event nor primitive changed the completed target. */
     scenarios++;
+    rt_executor_reset(x);
+
+    check_persistent_state(x, pool);
 
     /* Invalid opening contracts cannot create or overwrite an executor. */
     rt_executor *empty = NULL;
@@ -1142,6 +1272,7 @@ int main(void)
     invalid = memory; invalid.guest_base = UINT64_MAX - POOL_SIZE / 2;
     CHECK(rt_executor_open(&invalid, &empty, error, sizeof error) == -1 && empty == NULL);
     scenarios++;
+    rt_executor_reset(x);
 
     rt_executor_close(x);
     x = NULL;
@@ -1155,7 +1286,7 @@ int main(void)
     munmap(pool, POOL_SIZE);
     size = record_draw(14, at(0x100000), 16, 16, 0, scale, translate, COLORS);
     if (!run(x, 14, size)) check_gradient(x, at(0x100000), 16, 16, 0);
-    rt_executor_close(x);
+    rt_executor_close(x); x = NULL;
     rt_executor_close(NULL);
     scenarios++;
     rt_render_forget();

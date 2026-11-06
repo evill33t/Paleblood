@@ -51,18 +51,6 @@ struct MetalPipeline {
     bool write_color;
     id<MTLRenderPipelineState> pipeline;
 };
-struct rt_executor {
-    id<MTLDevice> device = nil;
-    id<MTLCommandQueue> queue = nil;
-    id<MTLBuffer> memory = nil;
-    id<MTLBuffer> stop = nil;
-    void *view = nullptr;
-    uint64_t size = 0, guest_base = 0, address_offset = 0;
-    bool failed = false;
-    std::vector<MetalShader> shaders;
-    std::vector<MetalTarget> targets;
-    std::vector<MetalPipeline> pipelines;
-};
 struct MetalState {
     rt_color_target color{};
     bool color_enabled = false, other[RT_COLOR_TARGETS] = {};
@@ -80,6 +68,19 @@ struct MetalState {
     uint64_t index_base = 0;
     bool index_type_set = false, index_base_set = false;
     bool index_base_current = false;
+};
+struct rt_executor {
+    id<MTLDevice> device = nil;
+    id<MTLCommandQueue> queue = nil;
+    id<MTLBuffer> memory = nil;
+    id<MTLBuffer> stop = nil;
+    void *view = nullptr;
+    uint64_t size = 0, guest_base = 0, address_offset = 0;
+    bool failed = false;
+    MetalState state;
+    std::vector<MetalShader> shaders;
+    std::vector<MetalTarget> targets;
+    std::vector<MetalPipeline> pipelines;
 };
 /* Own the new mapping until Metal has accepted it, including Objective-C exceptions. */
 struct PoolMapping {
@@ -508,6 +509,12 @@ static int draw_indexed(rt_executor *x, MetalState &state, uint32_t header, uint
     return draw(x, state, count, error, size, &indices);
 }
 
+/* Reset only GPU state: completed targets, compiled shaders and device failure remain. */
+extern "C" void rt_executor_reset(rt_executor *x)
+{
+    if (x) x->state = MetalState{};
+}
+
 extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, char *error, size_t error_size)
 {
     if (!x || x->failed) return failed(error, error_size, "a usable executor is required");
@@ -515,7 +522,7 @@ extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, 
         @try {
             try {
                 size_t count = 0; const rt_render_call *calls = rt_render_submitted(buffer, bytes, &count);
-                MetalState state;
+                MetalState &state = x->state;
                 for (size_t i = 0; i < count; ++i) {
                     const rt_render_call &call = calls[i];
                     switch (call.kind) {
