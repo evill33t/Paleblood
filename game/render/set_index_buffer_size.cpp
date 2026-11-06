@@ -17,6 +17,6 @@ extern "C" void bb_render_set_index_buffer_size(render::PacketBuffer *commands, 
     packet->value.set(value);
     set_packet_cursor(commands, packet_cursor(commands) + required_words * packet_word_bytes);
     if (observation.available)
-        rt_observe_index_buffer_size(observation.buffer, observation.offset,
+        rt_observe_index_size(observation.buffer, observation.offset,
                            packet->value.get());
 }

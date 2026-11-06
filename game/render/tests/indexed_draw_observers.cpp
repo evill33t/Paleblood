@@ -147,9 +147,9 @@ void ordinary()
         if (call) {
             CHECK(call->offset == initial_offset);
             if (relative) {
-                CHECK(call->kind == RT_CALL_DRAW_INDEXED_OFFSET && call->u.draw_indexed_offset.header == (offset_header | 1));
-                CHECK(call->u.draw_indexed_offset.max_size == count && call->u.draw_indexed_offset.index_count == count);
-                CHECK(call->u.draw_indexed_offset.index_offset == index_offset && call->u.draw_indexed_offset.initiator == 0);
+                CHECK(call->kind == RT_CALL_DRAW_INDEX_OFFSET && call->u.draw_index.header == (offset_header | 1));
+                CHECK(call->u.draw_index.max_size == count && call->u.draw_index.count == count);
+                CHECK(call->u.draw_index.first == index_offset && call->u.draw_index.initiator == 0);
             } else {
                 CHECK(call->kind == RT_CALL_DRAW_INDEXED && call->u.draw_indexed.header == (direct_header | 1));
                 CHECK(call->u.draw_indexed.max_size == count && call->u.draw_indexed.index_count == count);
@@ -200,8 +200,8 @@ void query_effects()
         invoke(relative, &commands.packet);
         call = call_at(begin);
         if (call && relative) {
-            CHECK(call->u.draw_indexed_offset.max_size == (event_header | redirected_flags));
-            CHECK(call->u.draw_indexed_offset.index_offset == marker);
+            CHECK(call->u.draw_index.max_size == (event_header | redirected_flags));
+            CHECK(call->u.draw_index.first == marker);
         } else if (call) {
             const uint64_t overwritten_address = 0xabcdef1200000035;
             CHECK(call->u.draw_indexed.max_size == (event_header | redirected_flags));
@@ -224,10 +224,10 @@ void query_payload_effects()
         invoke(relative, &commands.packet);
         const auto *call = call_at(commands.packet.begin);
         if (call && relative) {
-            CHECK(call->u.draw_indexed_offset.header == (offset_header | 1));
-            CHECK(call->u.draw_indexed_offset.max_size == modified_max_size);
-            CHECK(call->u.draw_indexed_offset.index_offset == modified_offset);
-            CHECK(call->u.draw_indexed_offset.index_count == modified_count && call->u.draw_indexed_offset.initiator == modified_initiator);
+            CHECK(call->u.draw_index.header == (offset_header | 1));
+            CHECK(call->u.draw_index.max_size == modified_max_size);
+            CHECK(call->u.draw_index.first == modified_offset);
+            CHECK(call->u.draw_index.count == modified_count && call->u.draw_index.initiator == modified_initiator);
         } else if (call) {
             CHECK(call->u.draw_indexed.header == (direct_header | 1));
             CHECK(call->u.draw_indexed.max_size == modified_max_size);
@@ -260,7 +260,7 @@ void prefix_aliases()
         if (call) {
             CHECK(call->offset == start - begin);
             const uint32_t final_initiator = static_cast<uint32_t>(redirect_cursor + tail_words * word_bytes);
-            CHECK(relative ? call->u.draw_indexed_offset.initiator == final_initiator :
+            CHECK(relative ? call->u.draw_index.initiator == final_initiator :
                              call->u.draw_indexed.initiator == final_initiator);
         }
     }

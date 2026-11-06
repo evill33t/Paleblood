@@ -40,6 +40,6 @@ extern "C" void bb_render_draw_indexed_offset(render::PacketBuffer *commands, ui
         set_packet_cursor(commands, next + sizeof(RecordControlPair));
     }
     if (observation.available)
-        rt_observe_draw_indexed_offset(observation.buffer, observation.offset, packet->header.get(), packet->max_size.get(),
+        rt_observe_draw_index_offset_packet(observation.buffer, observation.offset, packet->header.get(), packet->max_size.get(),
                            packet->index_offset.get(), packet->index_count.get(), packet->initiator.get());
 }
