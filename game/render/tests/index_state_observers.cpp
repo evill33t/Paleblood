@@ -92,7 +92,7 @@ void direct()
         auto calls = submitted(commands.begin, 1);
         if (calls) {
             CHECK(calls->kind == RT_CALL_INDEX_TYPE && calls->offset == initial_offset);
-            CHECK(calls->u.index_type == test_word);
+            CHECK(calls->u.index_type.type == test_word);
         }
         rt_render_forget();
         commands = buffer(words.data(), triple_words);
@@ -103,14 +103,14 @@ void direct()
         CHECK(observed == emitted_address);
         CHECK(commands.cursor == start + triple_words * word_bytes);
         calls = submitted(commands.begin, 1);
-        if (calls) CHECK(calls->kind == RT_CALL_INDEX_BASE && calls->u.index_base == observed);
+        if (calls) CHECK(calls->kind == RT_CALL_INDEX_BASE && calls->u.index_base.address == observed);
         rt_render_forget();
         commands = buffer(words.data(), pair_words);
         set_size(&commands, high_word);
         CHECK(words[initial_offset / word_bytes] == size_header);
         CHECK(words[initial_offset / word_bytes + 1] == high_word);
         calls = submitted(commands.begin, 1);
-        if (calls) CHECK(calls->kind == RT_CALL_INDEX_BUFFER_SIZE && calls->u.index_buffer_size == high_word);
+        if (calls) CHECK(calls->kind == RT_CALL_INDEX_SIZE && calls->u.index_size.count == high_word);
     }
 }
 
@@ -130,7 +130,7 @@ void callbacks()
         CHECK(callback_calls == 1);
         const auto calls = submitted(replacement.begin, result ? 1 : 0);
         if (result && calls) {
-            CHECK(calls->offset == redirected_offset && calls->u.index_type == test_word);
+            CHECK(calls->offset == redirected_offset && calls->u.index_type.type == test_word);
             CHECK(commands.cursor == replacement.cursor + pair_words * word_bytes);
         } else {
             CHECK(commands.cursor == replacement.cursor);
@@ -152,23 +152,23 @@ void aliases()
     const uintptr_t begin = commands.begin;
     set_type(&commands, high_word);
     const auto calls = submitted(begin, 1);
-    if (calls) CHECK(calls->offset == cursor_overlap && calls->u.index_type == value_after_cursor_add);
+    if (calls) CHECK(calls->offset == cursor_overlap && calls->u.index_type.type == value_after_cursor_add);
     rt_render_forget();
     commands = buffer(&commands, pair_words, cursor_overlap);
     set_size(&commands, high_word);
     const auto size_overlap_calls = submitted(begin, 1);
     if (size_overlap_calls) CHECK(size_overlap_calls->offset == cursor_overlap &&
-                                 size_overlap_calls->u.index_buffer_size == value_after_cursor_add);
+                                 size_overlap_calls->u.index_size.count == value_after_cursor_add);
     rt_render_forget();
     commands = buffer(&commands, triple_words, base_overlap);
     set_base(&commands, address_with_carrying_high_byte);
     const auto base_calls = submitted(begin, 1);
-    if (base_calls) CHECK(base_calls->offset == base_overlap && base_calls->u.index_base == base_after_cursor_add);
+    if (base_calls) CHECK(base_calls->offset == base_overlap && base_calls->u.index_base.address == base_after_cursor_add);
     rt_render_forget();
     commands = buffer(&commands, pair_words, 0);
     set_size(&commands, test_word); // The packet overwrites begin: use the pre-store snapshot.
     const auto size_calls = submitted(begin, 1);
-    if (size_calls) CHECK(size_calls->offset == 0 && size_calls->u.index_buffer_size == test_word);
+    if (size_calls) CHECK(size_calls->offset == 0 && size_calls->u.index_size.count == test_word);
 }
 
 void invalid_available_offsets()
