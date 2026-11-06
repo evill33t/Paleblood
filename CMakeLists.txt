@@ -235,3 +235,11 @@ target_compile_options(test_indexed_draw_observers PRIVATE -ffp-contract=off -fn
 set_target_properties(test_indexed_draw_observers PROPERTIES ENABLE_EXPORTS ON)
 add_dependencies(test_indexed_draw_observers bbgame)
 add_test(NAME indexed_draw_observers COMMAND test_indexed_draw_observers $<TARGET_FILE:bbgame>)
+
+add_executable(test_indexed_inline_observers game/render/tests/indexed_inline_observers.cpp)
+target_link_libraries(test_indexed_inline_observers PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)
+target_include_directories(test_indexed_inline_observers PRIVATE runtime/include)
+target_compile_options(test_indexed_inline_observers PRIVATE -ffp-contract=off -fno-fast-math)
+set_target_properties(test_indexed_inline_observers PROPERTIES ENABLE_EXPORTS ON)
+add_dependencies(test_indexed_inline_observers bbgame)
+add_test(NAME indexed_inline_observers COMMAND test_indexed_inline_observers $<TARGET_FILE:bbgame>)
