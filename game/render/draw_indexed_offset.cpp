@@ -3,7 +3,7 @@
 // The caller passes offset before count; keep both DWORD values independent.
 #include "command_flags.h"
 #include "indexed_draw.h"
-#include "index_observe.h"
+#include "packet_observation.h"
 #include "record_step_user_pa_enabled.h"
 
 extern "C" void bb_render_draw_indexed_offset(render::PacketBuffer *commands, uint32_t index_offset, uint32_t index_count)
@@ -19,7 +19,7 @@ extern "C" void bb_render_draw_indexed_offset(render::PacketBuffer *commands, ui
     constexpr uint32_t nop_header = 0xc0001000;
     uintptr_t cursor;
     if (!reserve_words(commands, required_words, cursor)) return;
-    const IndexObservation observation = observe_index_call(commands, cursor);
+    const PacketObservation observation = observe_packet(commands, cursor);
     const uint32_t flags = packet_flags(commands);
     auto *packet = reinterpret_cast<DrawIndexedOffsetPacket *>(cursor);
     packet->header.set(draw_index_offset_2_header | (flags & predicate_bit));

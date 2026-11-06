@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Owned command storage tests the loaded writers and their optional renderer boundary.
 #include "../command_reservation.h"
-#include "../index_observe.h"
 #include "runtime/render_calls.h"
 
 #include <array>
