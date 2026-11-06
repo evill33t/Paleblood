@@ -207,3 +207,18 @@ add_test(NAME module_tls_boot
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
 set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
+
+# Game-owned packet tests use a loaded replacement library and the canonical host bridge.
+add_executable(test_index_state_observers game/render/tests/index_state_observers.cpp)
+target_link_libraries(test_index_state_observers PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)
+target_include_directories(test_index_state_observers PRIVATE runtime/include)
+target_compile_options(test_index_state_observers PRIVATE -ffp-contract=off -fno-fast-math)
+set_target_properties(test_index_state_observers PROPERTIES ENABLE_EXPORTS ON)
+add_dependencies(test_index_state_observers bbgame)
+add_test(NAME index_state_observers COMMAND test_index_state_observers $<TARGET_FILE:bbgame>)
+add_executable(test_index_state_no_renderer game/render/tests/index_state_no_renderer.cpp)
+target_link_libraries(test_index_state_no_renderer PRIVATE ${CMAKE_DL_LIBS})
+target_include_directories(test_index_state_no_renderer PRIVATE runtime/include)
+target_compile_options(test_index_state_no_renderer PRIVATE -ffp-contract=off -fno-fast-math)
+add_dependencies(test_index_state_no_renderer bbgame)
+add_test(NAME index_state_no_renderer COMMAND test_index_state_no_renderer $<TARGET_FILE:bbgame>)

@@ -63,6 +63,9 @@ address,replacement,system,returns
 0x01473750,bb_render_set_guard_band_discard_adjust,render,void
 0x01473fe0,bb_render_set_vgt_primitive_type,render,void
 0x014741b0,bb_render_emit_draw_index_auto,render,void
+0x01475270,bb_render_set_index_type,render,void
+0x014752c0,bb_render_set_index_base,render,void
+0x01475320,bb_render_set_index_buffer_size,render,void
 0x01475370,bb_render_emit_num_instances,render,void
 0x01475da0,bb_render_emit_event_write,render,void
 0x014765e0,bb_render_configure_viewport,render,void
