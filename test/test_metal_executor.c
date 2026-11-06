@@ -740,17 +740,19 @@ int main(void)
     }
 
     /* Canonical logical draws carry first/count only, with an optional retained buffer extent. */
+    rt_executor *legacy_executor = NULL;
+    CHECK(rt_executor_open(&memory, &legacy_executor, error, sizeof error) == 0);
     for (unsigned type = 0; type < 2; ++type) for (unsigned bounded = 0; bounded < 2; ++bounded) {
         uint64_t setup = 1500 + type * 4 + bounded * 2, buffer = setup + 1;
         uint64_t target = at(0xe00000 + (type * 2 + bounded) * 0x10000);
         size = record_index_setup(setup, target, type);
         CHECK(rt_render_record_index_base(setup, size, at(type ? INDICES32 : INDICES16), error, sizeof error) == 0); size += 0x10;
         if (bounded) { CHECK(rt_render_record_index_size(setup, size, 4, error, sizeof error) == 0); size += 0x10; }
-        run(x, setup, size);
+        run(legacy_executor, setup, size);
         CHECK(rt_render_record_draw_index_offset(buffer, 0x10, 1, 3, error, sizeof error) == 0);
-        if (!run(x, buffer, 0x20)) check_gradient(x, target, 16, 16, 0);
+        if (!run(legacy_executor, buffer, 0x20)) check_gradient(legacy_executor, target, 16, 16, 0);
         scenarios++;
-        rt_executor_reset(x);
+        rt_executor_reset(legacy_executor);
     }
     const struct { uint32_t extent, first; } legacy_ranges[] = {{0, 1}, {3, 1}, {UINT32_MAX, UINT32_MAX}};
     for (unsigned i = 0; i < sizeof legacy_ranges / sizeof legacy_ranges[0]; ++i) {
@@ -759,10 +761,11 @@ int main(void)
         CHECK(rt_render_record_index_base(buffer, size, at(INDICES32), error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_index_size(buffer, size, legacy_ranges[i].extent, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_draw_index_offset(buffer, size, legacy_ranges[i].first, 3, error, sizeof error) == 0); size += 0x10;
-        expect_error(x, buffer, size, "legacy indexed draw exceeds INDEX_BUFFER_SIZE");
+        expect_error(legacy_executor, buffer, size, "legacy indexed draw exceeds INDEX_BUFFER_SIZE");
         scenarios++;
-        rt_executor_reset(x);
+        rt_executor_reset(legacy_executor);
     }
+    rt_executor_close(legacy_executor);
 
     /* A zero-count packet still submits a pass, and never fetches its unusable address/offset. */
     for (unsigned offset_form = 0; offset_form < 2; ++offset_form) {
@@ -1151,6 +1154,8 @@ int main(void)
     }
 
     /* The shared translator's packed UNORM8 table must compile and load/swizzle in both stages. */
+    rt_executor *format_executor = NULL;
+    CHECK(rt_executor_open(&memory, &format_executor, error, sizeof error) == 0);
     const uint32_t packed_colors[3] = {0xff8020bf, 0xff8020bf, 0xff8020bf};
     memcpy(pool + PACKED_COLORS, packed_colors, sizeof packed_colors);
     for (unsigned stage = 0; stage < 2; ++stage) for (unsigned swap = 0; swap < 2; ++swap) {
@@ -1173,9 +1178,9 @@ int main(void)
             CHECK(rt_render_record_user_data(buffer, size, RT_STAGE_PIXEL, 0, user, 4, error, sizeof error) == 0); size += 0x10;
         }
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
-        if (!run(x, buffer, size)) {
+        if (!run(format_executor, buffer, size)) {
             uint32_t pixels[16 * 16];
-            int read = rt_executor_read_target(x, target, pixels, 16, 16, error, sizeof error);
+            int read = rt_executor_read_target(format_executor, target, pixels, 16, 16, error, sizeof error);
             CHECK(read == 0);
             if (!read) {
                 unsigned bad = 0;
@@ -1189,8 +1194,9 @@ int main(void)
             }
         }
         scenarios++;
-        rt_executor_reset(x);
+        rt_executor_reset(format_executor);
     }
+    rt_executor_close(format_executor);
 
     /* A one-component format at the last pool dword: selectors supply zero and float one. */
     memcpy(pool + POOL_SIZE - 4, solid[0], sizeof(float));
