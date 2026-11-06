@@ -268,7 +268,7 @@ void output_and_input_aliases()
         auto *output = fixture.packet.data() + initial_offset;
         std::memcpy(output + source_overlap, source_words.data(), sizeof(source_words));
         fixture.emit(writer, RT_STAGE_VERTEX, 0, output + source_overlap);
-        const unsigned words = writer == Writer::Descriptor32 ? RT_USER_DATA_MAX_WORDS : writers.front().payload_words;
+        const unsigned words = writer == Writer::Descriptor32 ? static_cast<unsigned>(RT_USER_DATA_MAX_WORDS) : writers.front().payload_words;
         const auto &call = record(fixture.begin(), initial_offset, RT_STAGE_VERTEX, 0, words,
                                  output + descriptor_payload_bytes);
         CHECK(call.u.user_data.words[0] == source_words[0]);
