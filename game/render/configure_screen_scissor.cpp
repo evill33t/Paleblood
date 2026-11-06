@@ -4,6 +4,7 @@
 // writes.
 #include "present_parameter_transforms.h"
 #include "command_reservation.h"
+#include "viewport_observers.h"
 
 extern "C" void bb_render_configure_screen_scissor(render::PacketBuffer *commands,
                                                    uint32_t x, uint32_t y,
@@ -17,6 +18,7 @@ extern "C" void bb_render_configure_screen_scissor(render::PacketBuffer *command
     constexpr uint32_t halfword_shift = 16;
     uintptr_t cursor;
     if (!reserve_words(commands, required_words, cursor)) return;
+    const auto observation = observe_packet(commands, cursor);
     const uint32_t first = (x & halfword_mask) | (y << halfword_shift);
     const uint32_t second = (end_x & halfword_mask) | (end_y << halfword_shift);
     auto *packet = reinterpret_cast<RecordParameterPairPacket *>(cursor);
@@ -25,4 +27,5 @@ extern "C" void bb_render_configure_screen_scissor(render::PacketBuffer *command
     packet->first.set(first);
     packet->second.set(second);
     set_packet_cursor(commands, packet_cursor(commands) + sizeof(RecordParameterPairPacket));
+    record_screen_scissor_observation(observation, packet);
 }

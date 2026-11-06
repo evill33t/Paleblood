@@ -27,3 +27,19 @@ target_link_options(bbgame PRIVATE -Wl,--no-undefined)
 # -fno-fast-math also overrides one that comes in through CXXFLAGS. tools/check_float_flags.py
 # checks the flags every game source is built with (ctest, so CI).
 target_compile_options(bbgame PRIVATE -ffp-contract=off -fno-fast-math)
+
+set(VIEWPORT_OBSERVER_WRITERS render/configure_viewport.cpp render/configure_screen_scissor.cpp)
+add_executable(test_viewport_observers render/tests/viewport_observers.cpp ${VIEWPORT_OBSERVER_WRITERS}
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_link_libraries(test_viewport_observers PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)
+target_compile_options(test_viewport_observers PRIVATE -ffp-contract=off -fno-fast-math)
+set_target_properties(test_viewport_observers PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME viewport_observers COMMAND test_viewport_observers)
+
+add_executable(test_viewport_observers_absent render/tests/viewport_observers.cpp ${VIEWPORT_OBSERVER_WRITERS}
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_include_directories(test_viewport_observers_absent PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
+target_compile_definitions(test_viewport_observers_absent PRIVATE PB_RENDER_OBSERVER_ABSENT=1)
+target_compile_options(test_viewport_observers_absent PRIVATE -ffp-contract=off -fno-fast-math)
+target_link_libraries(test_viewport_observers_absent PRIVATE ${CMAKE_DL_LIBS} pthread)
+add_test(NAME viewport_observers_absent COMMAND test_viewport_observers_absent)
