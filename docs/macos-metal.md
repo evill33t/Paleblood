@@ -101,6 +101,13 @@ Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center 
 depth export. Pixel-position X/Y inputs and whole-quad shader operations are outside this profile
 and are rejected explicitly. Other color layouts, output masks, barycentric modes and depth
 controls stop with a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
+The translator's required user-SGPR read mask is cached with each shader. Every draw checks it
+against slots explicitly written for that stage since reset; writing zero establishes a value,
+while untouched backing-array zeros do not. Partial writes accumulate across buffers, and reset
+forgets written slots while keeping the shader cache. This follows the public translator's
+program-order report: a write encountered in one branch can suppress a later read in another;
+it does not provide path-sensitive initialization analysis.
+
 The input remains valid GFX7 code with consistent resource metadata: this backend does not
 validate every instruction against its declared SGPR/VGPR allocation.
 
@@ -177,7 +184,7 @@ formats and swizzles in both stages, packed UNORM8 buffer loads, canonical logic
 bounds and raw-header tagging, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unbound pixel-image
 and sampling operations, descriptors loaded from memory, unbound fetch calls, strip/depth-target
-guards, unsupported compute/rect
+guards, required-versus-written user SGPRs with explicit zero and cached-reset checks, unsupported compute/rect
 events, readback bounds and mapping lifetime.
 It fails if no suitable GPU exists.
 Hosted CI compiles this code for ARM64 and x86-64; it does not run these GPU checks. A successful

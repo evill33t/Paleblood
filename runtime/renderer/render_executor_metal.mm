@@ -35,6 +35,7 @@ struct MetalShader {
     uint64_t code;
     unsigned user, output;
     unsigned required_parameters;
+    uint32_t user_read;
     bool vertex, flip_y;
     id<MTLFunction> function;
 };
@@ -60,6 +61,7 @@ struct MetalState {
     rt_vertex_shader vertex{};
     rt_pixel_shader pixel{};
     uint32_t user[2][GCN_USER_SGPR_MAX] = {};
+    uint32_t user_set[2] = {};
     uint32_t blend = 0, depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
     bool blend_set = false, depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
     uint32_t scissor_tl = 0, scissor_br = 0;
@@ -273,12 +275,13 @@ static MetalTarget *target_for(rt_executor *x, const rt_color_target &color, cha
 }
 
 static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned output,
-                                 unsigned parameter_capacity, bool flip_y, char *error, size_t error_size)
+                                 unsigned parameter_capacity, bool flip_y, uint32_t &user_read, char *error, size_t error_size)
 {
     for (const auto &shader : x->shaders)
         if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y) {
             if (shader.required_parameters > parameter_capacity)
                 return failed(error, error_size, "%s allocation is smaller than the shader interface", vertex ? "vertex parameter" : "pixel interpolant"), nil;
+            user_read = shader.user_read;
             return shader.function;
         }
     if (code < x->guest_base || code - x->guest_base >= x->size || code % 4)
@@ -293,6 +296,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         gcn_vertex_layout layout{};
         layout.user_sgprs = user; layout.output_control = output;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
+        layout.user_data_read = &user_read;
         result = gcn_translate_vertex(words, available, &layout, &spirv, &count, reason, sizeof reason);
     } else {
         /* Only perspective-center barycentrics occupy VGPR0/1. Image and sampler bindings stay empty,
@@ -300,6 +304,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         gcn_pixel_layout layout{};
         layout.user_sgprs = user; layout.push_constant_offset = USER_BYTES;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
+        layout.user_data_read = &user_read;
         result = gcn_translate_pixel(words, available, &layout, &spirv, &count, reason, sizeof reason);
     }
     if (result) return failed(error, error_size, "%s shader translation: %s", vertex ? "vertex" : "pixel", reason), nil;
@@ -352,7 +357,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         if (!library) return failed(error, error_size, "MSL compilation: %s", failure.localizedDescription.UTF8String), nil;
         id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:entry.c_str()]];
         if (!function) return failed(error, error_size, "compiled MSL entry point is missing"), nil;
-        x->shaders.push_back({code, user, output, required_parameters, vertex, flip_y, function});
+        x->shaders.push_back({code, user, output, required_parameters, user_read, vertex, flip_y, function});
         return function;
     } catch (const std::exception &exception) { return failed(error, error_size, "SPIR-V to MSL: %s", exception.what()), nil; }
 }
@@ -379,6 +384,14 @@ struct MetalIndices {
     MTLIndexType type;
     NSUInteger offset;
 };
+
+/* A physical zero in the backing array does not establish an incoming user SGPR's value. */
+static int check_user_data(bool vertex, uint32_t required, uint32_t written, char *error, size_t size)
+{
+    const uint32_t missing = required & ~written;
+    if (missing) return failed(error, size, "%s shader reads unset user data %#x", vertex ? "vertex" : "pixel", missing);
+    return 0;
+}
 
 static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *error, size_t size,
                  const MetalIndices *indices = nullptr)
@@ -409,11 +422,14 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (!target) return -1;
     MTLScissorRect scissor;
     if (screen_scissor(state, *target, scissor, error, size)) return -1;
+    uint32_t vertex_read = 0, pixel_read = 0;
     id<MTLFunction> vertex = shader_for(x, true, state.vertex.code, state.vertex.user_sgprs,
-                                      state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0, error, size);
+                                      state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0, vertex_read, error, size);
     id<MTLFunction> pixel = vertex ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
-                                             state.pixel.interpolated, false, error, size) : nil;
+                                             state.pixel.interpolated, false, pixel_read, error, size) : nil;
     if (!pixel) return -1;
+    if (check_user_data(true, vertex_read, state.user_set[0], error, size) ||
+        check_user_data(false, pixel_read, state.user_set[1], error, size)) return -1;
     const bool write_color = !state.target_mask_set || (state.target_mask & TARGET0_MASK) != 0;
     id<MTLRenderPipelineState> pipeline = pipeline_for(x, vertex, pixel, target->format, write_color, error, size);
     if (!pipeline) return -1;
@@ -552,6 +568,8 @@ extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, 
                         int stage = call.u.user_data.stage == RT_STAGE_VERTEX ? 0 : call.u.user_data.stage == RT_STAGE_PIXEL ? 1 : -1;
                         if (stage < 0) return failed(error, error_size, "only vertex and pixel user data are drawn yet");
                         std::memcpy(&state.user[stage][call.u.user_data.slot], call.u.user_data.words, call.u.user_data.count * sizeof(uint32_t));
+                        for (unsigned word = 0; word < call.u.user_data.count; ++word)
+                            state.user_set[stage] |= 1u << (call.u.user_data.slot + word);
                         break;
                     }
                     case RT_CALL_REGISTER:

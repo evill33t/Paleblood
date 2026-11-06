@@ -269,6 +269,68 @@ static void check_persistent_state(rt_executor *x, unsigned char *pool)
     rt_executor_reset(x);
 }
 
+/* Explicit zero is a defined value; leaving a required slot unset must fail, including cache hits. */
+static void check_written_user_data(const rt_executor_memory *memory, unsigned char *pool)
+{
+    rt_executor *executor = NULL;
+    char error[1024] = "";
+    CHECK(rt_executor_open(memory, &executor, error, sizeof error) == 0);
+    if (!executor) return;
+    const float scale[3] = {8, 8, 1}, translate[3] = {8, 8, 0};
+    const float colors[3][4] = {{0, 0, 0.25f, 1}, {2, 0, 0.25f, 1}, {0, 2, 0.25f, 1}};
+    memcpy(pool, colors, sizeof colors); /* A missing low base word still points safely inside owned memory. */
+    for (unsigned stage = 0; stage < 2; ++stage) {
+        const uint64_t target = at(0x1100000 + stage * 0x10000);
+        for (unsigned cached = 0; cached < 2; ++cached) {
+            rt_executor_reset(executor);
+            const uint64_t setup = 1600 + stage * 8 + cached * 4, missing = setup + 1, defined = setup + 2;
+            uint32_t size = record_setup(setup, target, 16, 16, 0, scale, translate, COLORS);
+            const uint32_t zero = 0;
+            if (!stage) {
+                /* Submit before the full VS user-data write, then leave only its low color base unset. */
+                run(executor, setup, 0x50);
+                uint32_t user[8]; descriptor(user, at(CORNERS)); descriptor(user + 4, guest_base);
+                CHECK(rt_render_record_user_data(missing, 0x10, RT_STAGE_VERTEX, 0, user, 4, error, sizeof error) == 0);
+                CHECK(rt_render_record_user_data(missing, 0x20, RT_STAGE_VERTEX, 5, user + 5, 3, error, sizeof error) == 0);
+                CHECK(rt_render_record_draw_auto(missing, 0x30, 3, error, sizeof error) == 0);
+                expect_error(executor, missing, 0x40, "vertex shader reads unset user data");
+            } else {
+                uint32_t pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(pixel, USER_PIXEL_CODE); pixel[3] = 4 << 1;
+                CHECK(rt_render_record_pixel_shader(setup, size, pixel, error, sizeof error) == 0); size += 0x10;
+                run(executor, setup, size);
+                CHECK(rt_render_record_user_data(missing, 0x10, RT_STAGE_PIXEL, 0, &zero, 1, error, sizeof error) == 0);
+                CHECK(rt_render_record_draw_auto(missing, 0x20, 3, error, sizeof error) == 0);
+                expect_error(executor, missing, 0x30, "pixel shader reads unset user data");
+            }
+            scenarios++;
+            if (!cached) {
+                uint32_t guard = 0xdeadbeef;
+                CHECK(rt_executor_read_target(executor, target, &guard, 1, 1, error, sizeof error) == -1 && guard == 0xdeadbeef);
+                if (!stage) CHECK(rt_render_record_user_data(defined, 0x10, RT_STAGE_VERTEX, 4, &zero, 1, error, sizeof error) == 0);
+                else {
+                    const uint32_t rest[3] = {0, 0, 0x3f800000};
+                    CHECK(rt_render_record_user_data(defined, 0x10, RT_STAGE_PIXEL, 1, rest, 3, error, sizeof error) == 0);
+                }
+                CHECK(rt_render_record_draw_auto(defined, 0x20, 3, error, sizeof error) == 0);
+                run(executor, defined, 0x30);
+                scenarios++;
+            }
+            if (!stage) check_gradient(executor, target, 16, 16, 0);
+            else {
+                uint32_t pixels[16 * 16];
+                int read = rt_executor_read_target(executor, target, pixels, 16, 16, error, sizeof error);
+                CHECK(read == 0);
+                if (!read) {
+                    unsigned bad = 0;
+                    for (unsigned i = 0; i < 16 * 16; ++i) if (pixels[i] != 0xff000000) bad++;
+                    CHECK(bad == 0);
+                }
+            }
+        }
+    }
+    rt_executor_close(executor);
+}
+
 int main(void)
 {
     char name[] = "/tmp/paleblood-metal-pool-XXXXXX";
@@ -1334,6 +1396,7 @@ int main(void)
     rt_executor_reset(x);
 
     check_persistent_state(x, pool);
+    check_written_user_data(&memory, pool);
 
     /* Invalid opening contracts cannot create or overwrite an executor. */
     rt_executor *empty = NULL;
