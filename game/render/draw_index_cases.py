@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Synthetic indexed-draw edges; query scripts have no invented pointer arguments.
 
-Usage: indexed_draw_cases.py OUT_DIR [--function FUNCTION]
+Usage: draw_index_cases.py OUT_DIR [--function FUNCTION]
 Default selection is the output directory basename used by the native packager.
 """
 import argparse
@@ -14,8 +14,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
 from harness import PAGE, SANDBOX
 
-FUNCTIONS = {'render_draw_indexed': ('0x01474360', 8, 24),
-             'render_draw_indexed_offset': ('0x01474420', 7, 20)}
+FUNCTIONS = {'render_draw_index': ('0x01474360', 8, 24),
+             'render_draw_index_offset': ('0x01474420', 7, 20)}
 PREFIX = 64
 CALLBACK = '0x014712b0'
 QUERY = '0x01489c40'

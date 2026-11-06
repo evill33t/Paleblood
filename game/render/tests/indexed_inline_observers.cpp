@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Test-owned query/copy providers exercise the loaded writer without loading an executable.
 #include "../command_flags.h"
-#include "../indexed_draw.h"
+#include "../draw_index.h"
 #include "runtime/guest.h"
 #include "runtime/render_calls.h"
 #include <array>
@@ -320,7 +320,7 @@ int main(int argc, char **argv)
     if (argc != argument_count) return 1;
     void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!library) { std::fprintf(stderr, "%s\n", dlerror()); return 1; }
-    draw = reinterpret_cast<Writer>(dlsym(library, "bb_render_draw_indexed_inline"));
+    draw = reinterpret_cast<Writer>(dlsym(library, "bb_render_draw_index_inline"));
     image = static_cast<unsigned char **>(dlsym(library, "rt_image"));
     CHECK(draw && image);
     if (draw && image) {

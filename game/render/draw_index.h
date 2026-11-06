@@ -33,5 +33,5 @@ static_assert(offsetof(DrawIndexedOffsetPacket, index_count) == 0x0c);
 static_assert(offsetof(DrawIndexedOffsetPacket, initiator) == 0x10);
 static_assert(sizeof(DrawIndexedOffsetPacket) == 0x14);
 } // namespace render
-extern "C" void bb_render_draw_indexed(render::PacketBuffer *, uint32_t index_count, uint64_t address);
-extern "C" void bb_render_draw_indexed_offset(render::PacketBuffer *, uint32_t index_offset, uint32_t index_count);
+extern "C" void bb_render_draw_index(render::PacketBuffer *, uint32_t index_count, uint64_t address);
+extern "C" void bb_render_draw_index_offset(render::PacketBuffer *, uint32_t index_offset, uint32_t index_count);

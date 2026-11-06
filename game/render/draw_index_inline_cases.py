@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Synthetic inline-index caller cases, not game recordings.
 
-Usage: indexed_inline_cases.py OUT_DIR
+Usage: draw_index_inline_cases.py OUT_DIR
 Large opaque-copy cases observe helper arguments only; they do not execute huge copies.
 """
 import argparse
@@ -138,7 +138,7 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     for case in generated:
         (args.out / (case['id'] + '.json')).write_text(json.dumps(case, indent=2) + '\n')
-    print(f'render_draw_indexed_inline: {len(generated)} synthetic edge cases written')
+    print(f'render_draw_index_inline: {len(generated)} synthetic edge cases written')
     return 0
 
 

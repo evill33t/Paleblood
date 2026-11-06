@@ -7,7 +7,7 @@
 #include "record_step_user_pa_enabled.h"
 #include "byte_copy_calls.h"
 
-extern "C" void bb_render_draw_indexed_inline(render::PacketBuffer *commands, uint32_t index_count,
+extern "C" void bb_render_draw_index_inline(render::PacketBuffer *commands, uint32_t index_count,
                                                 const void *source, uint32_t byte_count)
 {
     using namespace render;
