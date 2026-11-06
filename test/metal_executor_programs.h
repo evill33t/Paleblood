@@ -127,4 +127,24 @@ static const uint32_t pixel_unbound_image_mip[] = {
     0xbf810000, /* s_endpgm                                */
 };
 
+static const uint32_t pixel_unbound_sample[] = {
+    0x7e0402f0, /* v_mov_b32_e32 v2, 0.5                   */
+    0x7e0602f0, /* v_mov_b32_e32 v3, 0.5                   */
+    0xf0800f00, 0x00400402, /* image_sample v[4:7], v[2:3], s[0:7], s[8:11] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0)                      */
+    0xf800180f, 0x07060504, /* exp mrt0, v4, v5, v6, v7 done vm        */
+    0xbf810000, /* s_endpgm                                */
+};
+
+static const uint32_t pixel_unbound_memory_image[] = {
+    0xc0c00d00, /* s_load_dwordx8 s[0:7], s[12:13], 0x0    */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0)                    */
+    0x7e040280, /* v_mov_b32_e32 v2, 0                     */
+    0x7e060280, /* v_mov_b32_e32 v3, 0                     */
+    0xf0000f00, 0x00000402, /* image_load v[4:7], v[2:3], s[0:7] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0)                      */
+    0xf800180f, 0x07060504, /* exp mrt0, v4, v5, v6, v7 done vm        */
+    0xbf810000, /* s_endpgm                                */
+};
+
 #endif

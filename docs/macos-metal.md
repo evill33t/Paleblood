@@ -71,6 +71,9 @@ cmake --build build-metal-draw --target test_metal_executor --parallel 2
 ctest --test-dir build-metal-draw -R '^metal_executor$' --output-on-failure
 ```
 
+The optional Metal executor selects the headless display, no host audio, and the no-host-input
+provider for boot wiring. These build targets do not qualify a full macOS boot or host controller input.
+
 The executor processes recorded calls in submission order, with fresh state per submitted buffer.
 Live system-call shader bindings are placed by their command-buffer write address; the common
 recorder joins them to the submitted buffer at their byte offsets. After a submission, the next
@@ -134,9 +137,9 @@ own `MAX_SIZE`, and other indexed packet kinds are rejected.
 
 Unsupported formats, shader instructions, shader inputs, layered/multisampled targets and
 target reallocations return a named error. Blending, depth and unrecorded state remain outside
-this profile. Storage and sampled image bindings stay empty in this draw backend;
-`image_load` and `image_load_mip` return named translation errors. Texture sampling and
-fetch-shader calls remain unsupported by the shared translator. Rectangle lists need a geometry
+this profile. Image and sampler bindings stay empty in this draw backend;
+`image_load`, `image_load_mip` and `image_sample` return named translation errors, including
+image descriptors loaded from memory. Fetch-shader calls remain unsupported by the shared translator. Rectangle lists need a geometry
 expansion path and are rejected; compute shader bindings and dispatch events are also rejected
 explicitly by this draw-only backend.
 
@@ -163,7 +166,7 @@ address forms, pool-end index reads, zero-count draws, index updates, placed-sha
 buffer isolation, submission resets, null pixel shaders, 40-bit descriptor bases, descriptor
 formats and swizzles in both stages, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unbound pixel-image
-operations, unsupported compute/rect
+and sampling operations, descriptors loaded from memory, unsupported compute/rect
 events, readback bounds and mapping lifetime.
 It fails if no suitable GPU exists.
 Hosted CI compiles this code for ARM64 and x86-64; it does not run these GPU checks. A successful
