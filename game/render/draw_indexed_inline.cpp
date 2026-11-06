@@ -3,7 +3,7 @@
 // The indexed drawing wrapper uses this path to place data beside the command packets.
 #include "command_flags.h"
 #include "indexed_draw_inline.h"
-#include "index_observe.h"
+#include "packet_observation.h"
 #include "record_step_user_pa_enabled.h"
 #include "byte_copy_calls.h"
 
@@ -30,7 +30,7 @@ extern "C" void bb_render_draw_indexed_inline(render::PacketBuffer *commands, ui
     uintptr_t cursor;
     if (!reserve_words(commands, required_words, cursor)) return;
     const uintptr_t data_start = cursor + inline_data_prefix_words * packet_word_bytes;
-    const IndexObservation observation = observe_index_call(commands, cursor);
+    const PacketObservation observation = observe_packet(commands, cursor);
     const uint32_t flags = packet_flags(commands);
     auto *packet = reinterpret_cast<DrawIndexedPacket *>(cursor);
     packet->header.set(draw_index_2_header | (flags & predicate_bit));
