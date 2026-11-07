@@ -286,5 +286,5 @@ render_emit_shader_descriptor32,edge,,22,22,0,0,63a79525b94d1378,2026-11-07
 render_emit_shader_sampler16,edge,,21,21,0,0,d8d95cc34c5c0fb4,2026-11-07
 render_emit_shader_word,edge,,20,20,0,0,a0204b06a49f3b53,2026-11-07
 render_select_shader_command_mode,edge,,17,17,0,0,c3bbe3eef62eb4fc,2026-11-07
-render_set_ps_shader,edge,,26,26,0,0,9d6090dd1ff28bd0,2026-11-07
-render_set_vs_shader,edge,,26,26,0,0,86c6eab46d76dc33,2026-11-07
+render_set_ps_shader,edge,,26,26,0,0,864d311842ba1e86,2026-11-07
+render_set_vs_shader,edge,,26,26,0,0,45554d5adf9abd01,2026-11-07
