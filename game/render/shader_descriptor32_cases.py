@@ -62,6 +62,17 @@ def cases():
     yield c
 
 
+    # The first descriptor qword replaces the cursor with an owned address.
+    # The final live increment must follow that value after every payload store.
+    c = shader_case("descriptor_payload_replaces_cursor_with_owned_address", 2, 3, 80, 0)
+    c["buffers"]["self"] = {"size": 512, "bytes": "a5" * 512}
+    c["memory"][0] = {"addr": "buf:self+8", "pointer": "self+512"}
+    c["memory"][1] = {"addr": "buf:self+16", "pointer": "self"}
+    c["memory"].append({"addr": "buf:self", "pointer": "self"})
+    c["memory"].append({"addr": "buf:descriptor", "pointer": "self+128"})
+    yield c
+
+
 def shader_case(cid, stage, value, available, result):
     c = basic(cid, returns="void", size=64)
     c["buffers"].update(
