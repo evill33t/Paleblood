@@ -63,6 +63,7 @@ address,size,name,system,status,notes
 0x014736d0,124,render_set_guard_band_clip_adjust,render,edge-verified,Write vertical then horizontal guard-band clip adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
 0x01473750,124,render_set_guard_band_discard_adjust,render,edge-verified,Write vertical then horizontal guard-band discard adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
 0x01473fe0,90,render_set_vgt_primitive_type,render,edge-verified,Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE.
+0x014740a0,271,render_draw_index_inline,render,edge-verified,Emit inline DRAW_INDEX_2; publish before last-word clearing and unconditional byte copy; count and byte length remain independent
 0x014741b0,156,render_emit_draw_index_auto,render,edge-verified,Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet.
 0x01474360,189,render_draw_index,render,edge-verified,Emit DRAW_INDEX_2 with a full high address word and aligned low word; append a user-PA trace marker or NOP
 0x01474420,176,render_draw_index_offset,render,edge-verified,Emit DRAW_INDEX_OFFSET_2 from independent DWORD offset and count; preserve live cursor additions and the NOP publication path
