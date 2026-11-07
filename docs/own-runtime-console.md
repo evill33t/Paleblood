@@ -24,9 +24,10 @@ kernel results and console device behavior remain external to these bodies.
 Native `__error` can select a global fallback as well as thread-dependent
 storage; it is not proven to be a thread-local-only getter.
 
-The port supplies a separate, writable 32-bit errno cell for each host thread.
-Its initial zero, lifetime and thread selection are owned policy. It is separate
-from the host C library's errno. Successful operations preserve the guest cell;
+Console failures use the runtime's canonical `rt_guest_errno()` cell, the same
+storage returned by libkernel `__error` and used by other POSIX-style providers.
+It is a writable 32-bit cell for each host thread, initially zero, separate from
+the host C library's errno. Successful operations preserve the guest cell;
 failed supported operations publish its four-byte BSD compatibility value.
 Two-word provider results preserve the observed failure register pair. The
 secondary word on success is explicitly zero in this port; native success does

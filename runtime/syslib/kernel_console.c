@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #define _POSIX_C_SOURCE 200809L
 #include "runtime/console.h"
+#include "runtime/guest_errno.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 #include <errno.h>
@@ -25,15 +26,6 @@ static int anchor = -1;
 static pthread_t owner;
 enum { NEVER_PREPARED, PREPARING, READY, FAILED, POISONED, SHUT_DOWN };
 static atomic_int state;
-static _Thread_local int32_t guest_errno;
-
-int32_t *rt_guest_errno_address(void)
-{
-    const int saved = errno;
-    int32_t *result = &guest_errno;
-    errno = saved;
-    return result;
-}
 int rt_console_ready(void)
 {
     const int saved = errno;
@@ -74,7 +66,7 @@ static rt_console_call success(uint64_t value, int saved)
 }
 static rt_console_call guest_failure(int32_t error, int saved)
 {
-    guest_errno = error;
+    *rt_guest_errno() = error;
     errno = saved;
     return (rt_console_call){RT_CONSOLE_OK, {UINT64_MAX, UINT64_MAX}};
 }
@@ -245,7 +237,7 @@ const char *rt_console_status_message(rt_console_status status)
     case RT_CONSOLE_ALREADY_PREPARED: return "owned console preparation may be attempted only once";
     case RT_CONSOLE_WRONG_THREAD: return "console descriptors belong to a different host thread";
     case RT_CONSOLE_UNSUPPORTED_PATH: return "only the exact owned /dev/console output stream is supported";
-    case RT_CONSOLE_UNSUPPORTED_FLAGS: return "owned console admits only full raw open flags1";
+    case RT_CONSOLE_UNSUPPORTED_FLAGS: return "console open flags must equal 1";
     case RT_CONSOLE_INVALID_OUTPUT: return "a valid writable borrowed host output descriptor is required";
     case RT_CONSOLE_HOST_SETUP: return "host duplicate-anchor preparation failed";
     case RT_CONSOLE_UNKNOWN_HOST_ERROR: return "host operation failed without an owned BSD errno mapping";
@@ -268,4 +260,3 @@ static rt_syscall_result kernel_close(uint64_t fd)
 RT_SYSLIB("libkernel", _open, kernel_open);
 RT_SYSLIB("libkernel", _write, kernel_write);
 RT_SYSLIB("libkernel", _close, kernel_close);
-RT_SYSLIB("libkernel", __error, rt_guest_errno_address);
