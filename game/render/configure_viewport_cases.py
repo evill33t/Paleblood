@@ -9,6 +9,9 @@ from pathlib import Path
 import struct
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+from harness import PAGE, SANDBOX
+
 MASK64 = (1 << 64) - 1
 
 
@@ -58,9 +61,8 @@ def cases():
 
     # These float bit patterns encode cursor integers. Only the post-add output
     # addresses are dereferenced: self-8 plus16 becomes the mapped self+8.
-    # The controller must assert SANDBOX=0x900000000, PAGE=4096, sorted buffers,
-    # zero initial allocation offset and one guard page after each payload.
-    self_address = 0x900000000 + 6 * 4096  # other,packet,scale each occupy two pages.
+    # Sorted other, packet and scale buffers each occupy a payload and guard page.
+    self_address = SANDBOX + 6 * PAGE
     for cid, target in (
         ("first_packet_changes_cursor", self_address + 128),
         ("second_packet_overlaps_cursor", self_address - 8),
@@ -73,6 +75,32 @@ def cases():
         c["args"]["xmm0"] = word(target & 0xFFFFFFFF)
         c["args"]["xmm1"] = word(target >> 32)
         yield c
+
+    c = packet_case("callback_changes_storage_and_sources", 3, "callback", 0, 0x80, True)
+    sources = [0x7FC12345, 0x80000000, 0x3F800000, 0xFFC54321, 0, 0xBF800000]
+    changed = [0x7FA45678, 0x40000000, 0x80000000, 0x3F000000, 0xFFC98765, 0x40800000]
+    c["buffers"]["sources"] = {"size": 24, "bytes": "".join(map(word, sources))}
+    c["args"].update({"rdx": "buf:sources", "rcx": "buf:sources+12"})
+    c["memory"][3] = {"addr": "buf:self+32", "pointer": "sources"}
+    c["stubs"][0].update({"argi": [0, 2], "argu32": [1]})
+    c["stubs"][0]["writes"] = [
+        {"arg": 0, "offset": 0, "pointer": "other", "size": 8},
+        {"arg": 0, "offset": 16, "pointer": "other+64", "size": 8},
+        {"arg": 2, "offset": 0, "bytes": "".join(map(word, changed)), "size": 24},
+    ]
+    yield c
+
+    c = packet_case("borrowed_triplets_overlap_packet_output", 3, "direct", 80, 0, False)
+    c["args"].update({"rdx": "buf:packet", "rcx": "buf:packet+12"})
+    c["memory"].append({"addr": "buf:packet", "bytes": "".join(map(word, sources))})
+    yield c
+
+    c = packet_case("packet_overwrites_command_begin", 3, "direct", 80, 0, False)
+    c["buffers"]["self"] = {"size": 512, "bytes": "a5" * 512}
+    c["memory"][0] = {"addr": "buf:self+8", "pointer": "self+512"}
+    c["memory"][1] = {"addr": "buf:self+16", "pointer": "self"}
+    c["memory"].append({"addr": "buf:self", "pointer": "self"})
+    yield c
 
 
 def packet_case(cid, value, label, available, result, redirect):
@@ -110,6 +138,7 @@ def packet_case(cid, value, label, available, result, redirect):
 
 
 def main():
+    """Write deterministic synthetic fixtures for the viewport writer."""
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2

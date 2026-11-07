@@ -64,6 +64,31 @@ def cases():
         c["memory"][1] = {"addr": "buf:self+16", "pointer": f"self+{offset}"}
         yield c
 
+    c = packet_case("callback_changes_command_begin_and_cursor", 3, "callback", 0, 0x80, True)
+    c["stubs"][0].update({"argi": [0, 2], "argu32": [1]})
+    c["stubs"][0]["writes"] = [
+        {"arg": 0, "offset": 0, "pointer": "other", "size": 8},
+        {"arg": 0, "offset": 16, "pointer": "other+64", "size": 8},
+    ]
+    yield c
+
+    c = packet_case("cursor_publication_overwrites_bottom_right", 1, "direct", 80, 0, False)
+    c["buffers"]["self"] = {"size": 512, "bytes": "a5" * 512}
+    c["args"].update({"rdx": "0x2", "rcx": "0x9", "r8": "0x7"})
+    c["memory"][0] = {"addr": "buf:self+8", "pointer": "self+512"}
+    c["memory"][1] = {"addr": "buf:self+16", "pointer": "self+4"}
+    c["memory"].append({"addr": "buf:self", "pointer": "self"})
+    yield c
+
+    # Clear Y independently so its high half cannot hide a missing X mask.
+    c = packet_case("high_x_bits_with_zero_y", 0xFFFF0001, "direct", 80, 0, False)
+    c["args"].update({"rdx": "0x0", "rcx": "0x80000002", "r8": "0x0"})
+    yield c
+
+    c = packet_case("signed_raw_coordinate_words", 0xFFFF8000, "direct", 80, 0, False)
+    c["args"].update({"rdx": "0x8000ffff", "rcx": "0xaaaa4000", "r8": "0xbbbb4000"})
+    yield c
+
 
 def packet_case(cid, value, label, available, result, redirect):
     c = basic(cid, returns="void", size=64)
@@ -86,6 +111,7 @@ def packet_case(cid, value, label, available, result, redirect):
 
 
 def main():
+    """Write deterministic synthetic fixtures for the screen-scissor writer."""
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2
