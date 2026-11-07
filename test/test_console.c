@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #define _POSIX_C_SOURCE 200809L
 #include "runtime/console.h"
+#include "runtime/guest_errno.h"
+#include "runtime/process.h"
 #include "runtime/syslib.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -34,6 +36,8 @@ static void owned_free(void *);
 #undef close
 #undef malloc
 #undef free
+
+rt_process_info rt_process;
 
 static int duplicate_error, write_error, close_error, allocation_error;
 static unsigned duplicates, writes, closes, allocations, releases, live_allocations;
@@ -103,16 +107,13 @@ _Noreturn void rt_fatal(const char *function, const char *message)
 static const rt_syslib_entry *entry(const char *symbol)
 {
     const rt_syslib_entry *found = NULL;
-    size_t count = 0;
     for (const rt_syslib_entry *p = rt_syslib_begin(); p != rt_syslib_end(); p++) {
-        CHECK(p->library && !strcmp(p->library, "libkernel"));
+        if (strcmp(p->library, "libkernel") != 0 || strcmp(p->symbol, symbol) != 0) continue;
         CHECK(p->capability == RT_SYSLIB_CAPABILITY_IMPLEMENTED);
-        CHECK(!strcmp(p->symbol, "_open") || !strcmp(p->symbol, "_write")
-              || !strcmp(p->symbol, "_close") || !strcmp(p->symbol, "__error"));
-        count++;
-        if (!strcmp(p->symbol, symbol)) { CHECK(!found); found = p; }
+        CHECK(!found);
+        found = p;
     }
-    CHECK(count == 4 && found);
+    CHECK(found);
     return found;
 }
 static rt_syscall_result guest_open(const char *path, uint64_t flags, uint64_t mode)
@@ -149,7 +150,7 @@ static void *wrong_owner(void *unused)
     (void)unused;
     errno = EDOM;
     int32_t *cell = guest_error();
-    CHECK(*cell == 0 && guest_error() == cell && errno == EDOM);
+    CHECK(*cell == 0 && guest_error() == cell && cell == rt_guest_errno() && errno == EDOM);
     *cell = 702;
     worker_cell_address = (uintptr_t)cell;
     CHECK(rt_console_open((const char *)(uintptr_t)1, UINT64_MAX, 0).status == RT_CONSOLE_WRONG_THREAD);
@@ -165,7 +166,7 @@ static void regular(void)
     CHECK(!rt_console_ready());
     errno = ENOTTY;
     int32_t *cell = guest_error();
-    CHECK(cell == rt_guest_errno_address() && *cell == 0 && errno == ENOTTY);
+    CHECK(cell == rt_guest_errno() && *cell == 0 && errno == ENOTTY);
     CHECK(rt_console_open("/dev/console", 1, 0).status == RT_CONSOLE_NOT_READY);
     const int output = temporary_file(), reader = dup(output);
     CHECK(reader >= 0);
@@ -204,7 +205,9 @@ static void regular(void)
     CHECK(writes == before + 1);
     bad(guest_write(4, (const void *)(uintptr_t)1, UINT64_MAX), 22);
     CHECK(writes == before + 1);
-    *cell = 701;
+    /* Another POSIX-style provider and the imported getter share the same cell. */
+    *rt_guest_errno() = 701;
+    CHECK(*guest_error() == 701);
     const unsigned before_dup = duplicates, before_write = writes, before_close = closes;
     pthread_t thread;
     CHECK(pthread_create(&thread, NULL, wrong_owner, NULL) == 0);
@@ -344,6 +347,25 @@ static void timeout_handler(int number)
     if (timeout_armed) siglongjmp(timeout_jump, 1);
     _Exit(92);
 }
+static void shared_errno(void)
+{
+    int *cell = rt_guest_errno();
+    CHECK(guest_error() == cell && *cell == 0);
+    *cell = 701;
+    CHECK(*guest_error() == 701);
+    const int output = temporary_file();
+    CHECK(rt_console_prepare(output) == RT_CONSOLE_OK);
+    good(guest_open("/dev/console", 1, 0), 3);
+    good(guest_write(3, "shared", 6), 6);
+    CHECK(*cell == 701);
+    bad(guest_close(UINT64_MAX), 9);
+    CHECK(*rt_guest_errno() == 9 && guest_error() == cell);
+    *guest_error() = 702;
+    CHECK(*rt_guest_errno() == 702);
+    good(guest_close(3), 0);
+    CHECK(rt_console_shutdown() == RT_CONSOLE_OK && close(output) == 0);
+    puts("console shared errno: PASS");
+}
 static int timeout_fds[2];
 static void timeout_cleanup(void)
 {
@@ -403,6 +425,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[1], "pipe")) pipe_output();
     else if (!strcmp(argv[1], "timeout")) timeout_cleanup();
     else if (!strcmp(argv[1], "prepare-failure")) prepare_failure();
+    else if (!strcmp(argv[1], "shared-errno")) shared_errno();
     else CHECK(0);
     return 0;
 }

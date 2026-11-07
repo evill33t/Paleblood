@@ -40,13 +40,10 @@ rt_console_status rt_console_shutdown(void);
 int rt_console_ready(void);
 const char *rt_console_status_message(rt_console_status status);
 
-/* Owned per-host-thread int32 cell, initially0, stable until that host thread exits.
-   This is not the supplied kernel's conditional TCB/fallback implementation. Normal API
-   returns preserve host errno; successful guest operations leave guest errno unchanged. */
-int32_t *rt_guest_errno_address(void);
+/* Guest errors use the runtime cell declared by runtime/guest_errno.h. */
 
-/* Exact path /dev/console and full raw flags1 only; mode is ignored for that noncreating
-   profile. Guest descriptors are the lowest free int32>=3, independent of host numbers.
+/* Exact path /dev/console and full raw flags equal to 1 only; mode is ignored for that noncreating
+   profile. Guest descriptors are the lowest free signed 32-bit IDs starting at 3, independent of host numbers.
    Only valid readable path and write buffers for their declared extents are supported. */
 rt_console_call rt_console_open(const char *path, uint64_t flags, uint64_t mode);
 /* One host write, including zero count: no write-all, EINTR/EAGAIN retry, F_SETFL or SIGPIPE
