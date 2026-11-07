@@ -3,7 +3,7 @@
 #include "shader_gnm_calls.h"
 
 extern "C" void bb_render_set_ps_shader(render::PacketBuffer *commands,
-                                               const void *descriptor)
+    const void *descriptor)
 {
     using namespace render;
     constexpr uint32_t words = 40;
