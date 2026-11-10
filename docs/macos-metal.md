@@ -98,7 +98,7 @@ parameters. Declared vertex parameter and pixel interpolant capacities must cove
 interface, including on shader-cache hits; larger unused allocations are accepted.
 
 Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center inputs and no
-depth export. Pixel-position X/Y inputs and whole-quad shader operations are outside this profile
+depth export. Pixel-position X/Y inputs and whole-quad mask expansion are outside this profile
 and are rejected explicitly. Other color layouts, output masks, barycentric modes and depth
 controls stop with a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
 The translator's required user-SGPR read mask is cached with each shader. Every draw checks it
@@ -180,6 +180,12 @@ Declared SGPR bounds and written-slot masks are checked before reading either fo
 on shader-cache hits. Texels and descriptor words are read again at each draw, so CPU, compute
 and completed render-target writes remain visible through cached native views.
 
+Fragment sampling accepts the common translator's quad broadcasts for coordinate gradients;
+SPIRV-Cross lowers them to native 2x2 fragment-quad operations. Whole-quad mask expansion remains
+rejected because its wave-wide SCC is not established by a native 32-lane SIMD group. Vertex quad
+operations remain rejected. Native sampler selection is still limited to relative mip zero below;
+accepting the gradient instructions does not broaden that LOD profile.
+
 The backend supports 1D/2D images and arrays, mip and layer view ranges, and the common tiling
 modes through `rt_tiling_mip_chain`. SPIRV-Cross lowers 1D textures as 2D with height one. Native
 views preserve the descriptor's base mip, base layer and component selectors; selectors for
@@ -195,8 +201,8 @@ encoded-byte rule in the [Metal language specification, section 8.7.7](https://d
 
 Samplers support normalized wrap, mirror and clamp-to-edge addressing, with equal point or
 bilinear min/mag filters. Linear filtering requires a filterable sampled image; integer images
-used only by texel loads do not impose that restriction. The common translator's
-`image_sample` still selects relative level zero. Nondefault minimum LOD, bias or reserved
+used only by texel loads do not impose that restriction. The common translator supplies coordinate
+gradients for `image_sample`; the native unmipmapped sampler selects the view's first level. Nondefault minimum LOD, bias or reserved
 mip controls with a multi-level sampled view fail explicitly until their semantics are modeled;
 single-level views retain the common profile's irrelevant-field behavior. Pixel image stores
 and compute storage-image bindings remain separate unsupported paths.

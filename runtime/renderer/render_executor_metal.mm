@@ -675,9 +675,16 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
     try {
         spirv_cross::CompilerMSL compiler(spirv, count);
-        const auto &capabilities = compiler.get_declared_capabilities();
-        if (std::find(capabilities.begin(), capabilities.end(), spv::CapabilityGroupNonUniformQuad) != capabilities.end())
-            return failed(error, error_size, "whole-quad shader operations are outside the Metal draw profile"), nil;
+        /* Fragment image_sample gradients use native 2x2 quad broadcasts. Whole-quad mask
+           expansion also writes wave-wide SCC; its GCN-wave behavior is still outside this profile. */
+        for (size_t at = 5; at < count;) {
+            const uint32_t words = spirv[at] >> 16, opcode = spirv[at] & 0xffffu;
+            if (!words || words > count - at)
+                return failed(error, error_size, "translated draw SPIR-V has an invalid instruction extent"), nil;
+            if (opcode == spv::OpGroupNonUniformQuadSwap || (vertex && opcode == spv::OpGroupNonUniformQuadBroadcast))
+                return failed(error, error_size, "whole-quad shader operations are outside the Metal draw profile"), nil;
+            at += words;
+        }
         const auto resources = compiler.get_shader_resources();
         const auto &parameters = vertex ? resources.stage_outputs : resources.stage_inputs;
         unsigned required_parameters = 0;
