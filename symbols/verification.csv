@@ -311,6 +311,9 @@ render_set_db_stencil_control,edge,,18,18,0,0,57031e7de408f477,2026-11-06
 render_set_depth_render_target,edge,,21,21,0,0,f0d031881735ea70,2026-11-10
 render_set_guard_band_clip_adjust,edge,,13,13,0,0,2d272dbad04ea940,2026-11-05
 render_set_guard_band_discard_adjust,edge,,13,13,0,0,d796d1a200c99651,2026-11-05
+render_set_index_base,edge,,32,32,0,0,a7808f0c1403a5d4,2026-11-10
+render_set_index_buffer_size,edge,,30,30,0,0,d48de5bbdc650a68,2026-11-10
+render_set_index_type,edge,,30,30,0,0,aec29eb2874022a7,2026-11-10
 render_set_pa_cl_vte_cntl,edge,,45,45,0,0,70ef1c91ed183e42,2026-11-05
 render_set_pa_sc_mode_cntl_0,edge,,15,15,0,0,2035cc2e432b3498,2026-11-10
 render_set_present_last_record_depth_compress_disable,edge,,28,28,0,0,5cae91d8e7c96056,2026-11-04
@@ -341,6 +344,3 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_set_index_base,edge,,32,32,0,0,a7808f0c1403a5d4,2026-11-10
-render_set_index_buffer_size,edge,,30,30,0,0,d48de5bbdc650a68,2026-11-10
-render_set_index_type,edge,,30,30,0,0,aec29eb2874022a7,2026-11-10
