@@ -148,6 +148,34 @@ static void sampled_images(rt_executor *x)
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
     CHECK(differing_pixels(x, at(TEXEL_TARGET)) > 0);
 
+    /* 8_8_8_8 sRGB (NUM_FORMAT 9): each texel draws as its bytes decoded from sRGB to linear (the
+       transfer function of IEC 61966-2-1), alpha as is; read as unorm the same bytes do not */
+    {
+        enum { SRGB = 0x8c0000 };
+        uint32_t *const texels = (uint32_t *)(guest + SRGB);
+        for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) texels[i] = reference_texel(i % WIDTH % SIZE, i / WIDTH % SIZE);
+        uint32_t srgb[8];
+        for (int unorm = 0; unorm < 2; unorm++) {
+            image_descriptor(srgb, at(SRGB), 10, unorm ? 0 : 9, WIDTH, HEIGHT);
+            srgb[3] |= LINEAR_ALIGNED << 20;
+            const int srgb_drawn = draw_texels(x, at(TEXEL_TARGET), srgb, error, sizeof error);
+            if (srgb_drawn) fprintf(stderr, "sRGB image: %s\n", error);
+            uint32_t bgra[SIZE * SIZE];
+            CHECK(srgb_drawn == 0 && rt_executor_read_target(x, at(TEXEL_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+            int decoded = 1;
+            for (int q = 0; q < SIZE * SIZE; q++) {
+                const uint32_t texel = reference_texel(q % SIZE, q / SIZE), p = bgra[q];
+                const uint32_t drawn[3] = {p >> 16 & 0xff, p >> 8 & 0xff, p & 0xff}; /* red, green, blue */
+                for (int c = 0; c < 3; c++) {
+                    const double v = (texel >> (8 * c) & 0xff) / 255.0;
+                    const double linear = v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+                    decoded &= fabs((double)drawn[c] - linear * 255) <= 2.0;
+                }
+            }
+            CHECK(unorm ? !decoded : decoded);
+        }
+    }
+
     /* the guest rewrites the texels: the next draw reads the new ones */
     for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) ((uint32_t *)(guest + LINEAR))[i] = reference_texel(i % WIDTH % SIZE, i / WIDTH % SIZE);
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
@@ -1127,6 +1155,36 @@ int main(void)
         for (unsigned i = 0; i < LANES; i++)
             right &= back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f;
         CHECK(right);
+        }
+
+        /* Stores outside a storage image write nothing: 64 lanes fill a 40-texel image, and 40 lanes
+           read it back; texels 0-39 hold their values and nothing past them was touched. */
+        {
+            enum { NARROW = 40 };
+            rt_render_forget(), rt_executor_reset(x);
+            image_descriptor(image_a, at(IMAGE_A + 0x70000), 14, 7, NARROW, 1);
+            for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+            uint32_t offset = 0x10;
+            for (int pass = 0; pass < 2; pass++) {
+                const uint64_t code = pass ? codes[2] : codes[0];
+                const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1,
+                                                                  pass ? NARROW : LANES, 1, 1};
+                CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+                memset(user, 0, sizeof user);
+                if (pass) descriptor(user, at(BACK), 16);
+                memcpy(user + 8, image_a, sizeof image_a);
+                CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+                CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+                CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+                offset += 0x40;
+            }
+            const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+            if (ran) fprintf(stderr, "stores past an image: %s\n", error);
+            CHECK(ran == 0);
+            int right = 1;
+            for (unsigned i = 0; i < LANES; i++)
+                right &= i < NARROW ? back[i * 4] == (float)i && back[i * 4 + 3] == 0.5f : back[i * 4] == -1 && back[i * 4 + 3] == -1;
+            CHECK(right);
         }
 
         /* An image no shader wrote holds the guest memory's texels: linear (tiling index 8) RGBA32F

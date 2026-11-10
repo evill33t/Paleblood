@@ -615,6 +615,21 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
         const int k_multiplies = !strcmp(name, "v_madmk_f32");
         const uint32_t product = value(t, SPV_OP_F_MUL, t_float(t), 2, a, k_multiplies ? k : b);
         write_float(t, &o, value(t, SPV_OP_F_ADD, t_float(t), 2, product, k_multiplies ? b : k), ins);
+    } else if (!strcmp(name, "v_mul_hi_u32") || !strcmp(name, "v_mul_hi_i32")) {
+        /* The high 32 bits of the 64-bit product (Sea Islands manual). Signed, from the unsigned
+           one: hi_s(a, b) = hi_u(a, b) - (a < 0 ? b : 0) - (b < 0 ? a : 0), modulo 2^32. */
+        if (o.abs || o.neg || o.clamp || o.omod) fail(t, "%s: modifiers on an integer operation", name);
+        const uint32_t a = source(t, o.src[0], ins), b = source(t, o.src[1], ins);
+        const uint32_t thirty_two = spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), 32, 0}, 3);
+        const uint32_t product = value(t, SPV_OP_I_MUL, t_ulong(t), 2, widen(t, a), widen(t, b));
+        uint32_t high = value(t, SPV_OP_U_CONVERT, t_uint(t), 1, value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_ulong(t), 2, product, thirty_two));
+        if (!strcmp(name, "v_mul_hi_i32")) {
+            const uint32_t a_negative = value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, a, konst(t, 0x80000000u));
+            const uint32_t b_negative = value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, b, konst(t, 0x80000000u));
+            high = value(t, SPV_OP_I_SUB, t_uint(t), 2, high, value(t, SPV_OP_SELECT, t_uint(t), 3, a_negative, b, konst(t, 0)));
+            high = value(t, SPV_OP_I_SUB, t_uint(t), 2, high, value(t, SPV_OP_SELECT, t_uint(t), 3, b_negative, a, konst(t, 0)));
+        }
+        write_vgpr(t, o.dst, high);
     } else if ((op = FIND(integer_binary, name))) {
         if (o.abs || o.neg || o.clamp || o.omod) fail(t, "%s: modifiers on an integer operation", name);
         uint32_t a = source(t, o.src[0], ins), b = source(t, o.src[1], ins);
@@ -2111,8 +2126,26 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         sampled_load(t, b, variable, coordinate, coordinates, level, texel_type, dmask, vdata);
         return;
     }
-    const uint32_t merge = begin_if(t, exec_bit(t));
+    /* A storage image access outside the image: a store writes nothing, as on the hardware and under
+       Vulkan's robustImageAccess2 (which shadPS4 requires for the same reason); a load stops at run
+       time, as a sampled one does (what it returns is not established; with no stop word it is not
+   checked). Without the check the access
+       is undefined in Vulkan, and the GPU faulted on the LUT pass's stores (0x20d1b00800). */
     const uint32_t image = load(t, image_type(t, b), variable);
+    const uint32_t uvec = coordinates == 1 ? t_uint(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), coordinates}, 2);
+    const uint32_t bvec = coordinates == 1 ? t_bool(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_bool(t), coordinates}, 2);
+    const uint32_t size = value(t, SPV_OP_IMAGE_QUERY_SIZE, uvec, 1, image);
+    const uint32_t inside = value(t, SPV_OP_U_LESS_THAN, bvec, 2, value(t, SPV_OP_BITCAST, uvec, 1, coordinate), size);
+    const uint32_t in_range = coordinates == 1 ? inside : value(t, SPV_OP_ALL, t_bool(t), 1, inside);
+    t->queries_images = 1;
+    const int load_checked = op != MIMG_OP_STORE && t->layout->error_address; /* stops need the stop word */
+    if (load_checked) {
+        const uint32_t outside = begin_if(t, value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, in_range)));
+        runtime_stop(t, konst(t, (uint32_t)GCN_RUNTIME_STOP_IMAGE_RANGE << GCN_RUNTIME_STOP_KIND_SHIFT));
+        end_if(t, outside);
+    }
+    const uint32_t merge = begin_if(t, op == MIMG_OP_STORE || load_checked ? value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), in_range)
+                                                                         : exec_bit(t));
     if (op == MIMG_OP_STORE) {
         uint32_t texel[4];
         for (unsigned i = 0; i < 4; i++) {
