@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* The canonical observer bridge forwards every raw index payload to the real host record. */
-#include "runtime/render_observer.h"
+#include "runtime/render_index_observer.h"
 #include <stdio.h>
 
 /* Existing consumers read these prefixes; the appended packet fields fit the existing union. */
