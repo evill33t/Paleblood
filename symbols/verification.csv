@@ -211,6 +211,8 @@ render_configure_viewport,edge,,11,11,0,0,f15d9c1438c4fd09,2026-11-06
 render_configure_viewport_and_guard_band,edge,,26,26,0,0,67cbc6eee27c8769,2026-11-10
 render_convert_constructor_record,edge,,98,98,0,0,8bd5968199c5fb5d,2026-11-10
 render_convert_record_descriptor_classification,edge,,236,236,0,0,a130fb1ef6469c41,2026-11-05
+render_draw_index,edge,,45,45,0,0,de6bbce8c81a9203,2026-11-06
+render_draw_index_offset,edge,,42,42,0,0,f0e9c4661446d039,2026-11-06
 render_emit_draw_index_auto,edge,,14,14,0,0,ee788ee6a611a7a0,2026-11-10
 render_emit_event_write,edge,,17,17,0,0,d1a112029c3a3e46,2026-11-06
 render_emit_num_instances,edge,,14,14,0,0,60c78aac624b1dfe,2026-11-06
@@ -311,6 +313,9 @@ render_set_db_stencil_control,edge,,18,18,0,0,57031e7de408f477,2026-11-06
 render_set_depth_render_target,edge,,21,21,0,0,f0d031881735ea70,2026-11-10
 render_set_guard_band_clip_adjust,edge,,13,13,0,0,2d272dbad04ea940,2026-11-05
 render_set_guard_band_discard_adjust,edge,,13,13,0,0,d796d1a200c99651,2026-11-05
+render_set_index_base,edge,,32,32,0,0,a7808f0c1403a5d4,2026-11-10
+render_set_index_buffer_size,edge,,30,30,0,0,d48de5bbdc650a68,2026-11-10
+render_set_index_type,edge,,30,30,0,0,aec29eb2874022a7,2026-11-10
 render_set_pa_cl_vte_cntl,edge,,45,45,0,0,70ef1c91ed183e42,2026-11-05
 render_set_pa_sc_mode_cntl_0,edge,,15,15,0,0,2035cc2e432b3498,2026-11-10
 render_set_present_last_record_depth_compress_disable,edge,,28,28,0,0,5cae91d8e7c96056,2026-11-04
@@ -341,8 +346,3 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_set_index_base,edge,,32,32,0,0,a7808f0c1403a5d4,2026-11-10
-render_set_index_buffer_size,edge,,30,30,0,0,d48de5bbdc650a68,2026-11-10
-render_set_index_type,edge,,30,30,0,0,aec29eb2874022a7,2026-11-10
-render_draw_index,edge,,45,45,0,0,de6bbce8c81a9203,2026-11-06
-render_draw_index_offset,edge,,42,42,0,0,f0e9c4661446d039,2026-11-06
