@@ -4,6 +4,7 @@
 #include "command_flags.h"
 #include "draw_index.h"
 #include "packet_observation.h"
+#include "runtime/render_index_observer.h"
 #include "record_step_user_pa_enabled.h"
 
 extern "C" void bb_render_draw_index(render::PacketBuffer *commands, uint32_t index_count, uint64_t address)

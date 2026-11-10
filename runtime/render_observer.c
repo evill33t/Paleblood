@@ -2,7 +2,7 @@
 /* The game library's way to the renderer's record (runtime/render_observer.h): the record's
    functions are looked up by name in the host process once, and each observer call forwards to its
    function, or does nothing when the host has none. */
-#include "runtime/render_observer.h"
+#include "runtime/render_index_observer.h"
 
 #include <dlfcn.h>
 #include <pthread.h>

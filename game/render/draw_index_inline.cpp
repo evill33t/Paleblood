@@ -4,6 +4,7 @@
 #include "command_flags.h"
 #include "indexed_draw_inline.h"
 #include "packet_observation.h"
+#include "runtime/render_index_observer.h"
 #include "record_step_user_pa_enabled.h"
 #include "byte_copy_calls.h"
 

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* A legacy host with a recorder must not silently lose a new indexed event. */
-#include "runtime/render_observer.h"
+#include "runtime/render_index_observer.h"
 
 #include <stdio.h>
 #include <string.h>

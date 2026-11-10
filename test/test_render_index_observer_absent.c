@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* A host without record exports can call every observer without a provider or side effects. */
-#include "runtime/render_observer.h"
+#include "runtime/render_index_observer.h"
 #include <stdio.h>
 int main(void)
 {
