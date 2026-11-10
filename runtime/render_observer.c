@@ -146,8 +146,9 @@ void rt_observe_draw_index_offset(uint64_t buffer, uint32_t offset, uint32_t fir
     FORWARD(draw_index_offset, "render observer: indexed draw", buffer, offset, first, count);
 }
 
-/* An absent host is optional. A present legacy host cannot represent a raw packet: refusing
-   its missing export keeps header/predicate and alias-sensitive payloads from being lost. */
+/* draw_auto is the existing availability probe used by rt_render_observer_available:
+   no renderer is optional, but an enabled older host cannot represent a raw packet.
+   Refuse its missing export instead of losing packet fields through the legacy call. */
 #define FORWARD_PACKET(name, call, ...)                                                            \
     do {                                                                                           \
         pthread_once(&looked_up, look_up);                                                          \

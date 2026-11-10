@@ -130,27 +130,13 @@ target_link_libraries(pbrender_calls PUBLIC pthread)
 add_executable(test_render_calls test/test_render_calls.c)
 target_link_libraries(test_render_calls PRIVATE pbrender_calls)
 add_test(NAME render_calls COMMAND test_render_calls)
-add_executable(test_render_index_observer test/test_render_index_observer.c runtime/render_observer.c)
-target_include_directories(test_render_index_observer PRIVATE runtime/include)
-target_link_libraries(test_render_index_observer PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)
-set_target_properties(test_render_index_observer PROPERTIES ENABLE_EXPORTS ON)
-add_test(NAME render_index_observer COMMAND test_render_index_observer)
-add_executable(test_render_index_observer_absent test/test_render_index_observer_absent.c runtime/render_observer.c)
-target_include_directories(test_render_index_observer_absent PRIVATE runtime/include)
-target_link_libraries(test_render_index_observer_absent PRIVATE ${CMAKE_DL_LIBS} pthread)
-add_test(NAME render_index_observer_absent COMMAND test_render_index_observer_absent)
-add_executable(test_render_index_observer_partial test/test_render_index_observer_partial.c runtime/render_observer.c)
-target_include_directories(test_render_index_observer_partial PRIVATE runtime/include)
-target_link_libraries(test_render_index_observer_partial PRIVATE ${CMAKE_DL_LIBS} pthread)
-set_target_properties(test_render_index_observer_partial PROPERTIES ENABLE_EXPORTS ON)
-add_test(NAME render_index_observer_partial COMMAND test_render_index_observer_partial)
 # The GPU's tiled image layouts, for reading images out of guest memory.
 add_library(pbtiling STATIC runtime/renderer/tiling.c)
 target_include_directories(pbtiling PUBLIC runtime/include)
 add_executable(test_tiling test/test_tiling.c)
 target_link_libraries(test_tiling PRIVATE pbtiling)
 add_test(NAME tiling COMMAND test_tiling)
-add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c runtime/renderer/rect_list.c)
+add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c runtime/renderer/rect_list.c runtime/renderer/tile_copy.c)
 target_include_directories(pbgcn_spirv PUBLIC runtime/include)
 target_link_libraries(pbgcn_spirv PUBLIC pbgcn_decode)
 add_executable(test_gcn_spirv test/test_gcn_spirv.c)
@@ -191,6 +177,7 @@ add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+add_test(NAME source_files COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/source_files.py --check)
 
 # Compiled-SDK wire validation over the loader-owned process parameters.
 add_executable(test_compiled_sdk test/test_compiled_sdk.c
@@ -205,6 +192,22 @@ add_executable(test_direct_memory_bounds test/test_direct_memory_bounds.c
 target_include_directories(test_direct_memory_bounds PRIVATE runtime/include)
 add_test(NAME direct_memory_bounds COMMAND test_direct_memory_bounds)
 set_tests_properties(direct_memory_bounds PROPERTIES TIMEOUT 20)
+
+# The table is immutable in the original image. This unit uses owned values so
+# the last valid entry and a one-past access are independently observable.
+add_executable(test_present_encoding_units game/render/tests/test_present_encoding_units.cpp
+               game/render/present_encoding_units.cpp)
+target_include_directories(test_present_encoding_units PRIVATE runtime/include)
+target_compile_options(test_present_encoding_units PRIVATE
+                       -ffp-contract=off -fno-fast-math)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(test_present_encoding_units PRIVATE
+                           -fsanitize=bounds -fsanitize-undefined-trap-on-error)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(test_present_encoding_units PRIVATE
+                           -fsanitize=bounds -fsanitize-trap=bounds)
+endif()
+add_test(NAME present_encoding_units COMMAND test_present_encoding_units)
 # Owned per-thread module blocks and the actual TLS registry entry.
 find_package(Threads REQUIRED)
 add_executable(test_module_tls test/test_module_tls.c runtime/syslib/kernel_tls.c
@@ -234,6 +237,13 @@ target_compile_options(test_index_state_no_renderer PRIVATE -ffp-contract=off -f
 add_dependencies(test_index_state_no_renderer bbgame)
 add_test(NAME index_state_no_renderer COMMAND test_index_state_no_renderer $<TARGET_FILE:bbgame>)
 
+# Full-width module arguments and proven early invalid-ID statuses.
+add_executable(test_sysmodule_ids test/test_sysmodule_ids.c
+               runtime/syslib/table.c runtime/syslib/kernel_sysmodule.c)
+target_include_directories(test_sysmodule_ids PRIVATE runtime/include)
+add_test(NAME sysmodule_ids COMMAND test_sysmodule_ids)
+set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
+
 add_executable(test_indexed_draw_observers game/render/tests/indexed_draw_observers.cpp)
 target_link_libraries(test_indexed_draw_observers PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)
 target_include_directories(test_indexed_draw_observers PRIVATE runtime/include)
@@ -241,6 +251,21 @@ target_compile_options(test_indexed_draw_observers PRIVATE -ffp-contract=off -fn
 set_target_properties(test_indexed_draw_observers PROPERTIES ENABLE_EXPORTS ON)
 add_dependencies(test_indexed_draw_observers bbgame)
 add_test(NAME indexed_draw_observers COMMAND test_indexed_draw_observers $<TARGET_FILE:bbgame>)
+
+add_executable(test_render_index_observer test/test_render_index_observer.c runtime/render_observer.c)
+target_include_directories(test_render_index_observer PRIVATE runtime/include)
+target_link_libraries(test_render_index_observer PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)
+set_target_properties(test_render_index_observer PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME render_index_observer COMMAND test_render_index_observer)
+add_executable(test_render_index_observer_absent test/test_render_index_observer_absent.c runtime/render_observer.c)
+target_include_directories(test_render_index_observer_absent PRIVATE runtime/include)
+target_link_libraries(test_render_index_observer_absent PRIVATE ${CMAKE_DL_LIBS} pthread)
+add_test(NAME render_index_observer_absent COMMAND test_render_index_observer_absent)
+add_executable(test_render_index_observer_partial test/test_render_index_observer_partial.c runtime/render_observer.c)
+target_include_directories(test_render_index_observer_partial PRIVATE runtime/include)
+target_link_libraries(test_render_index_observer_partial PRIVATE ${CMAKE_DL_LIBS} pthread)
+set_target_properties(test_render_index_observer_partial PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME render_index_observer_partial COMMAND test_render_index_observer_partial)
 
 add_executable(test_indexed_inline_observers game/render/tests/indexed_inline_observers.cpp)
 target_link_libraries(test_indexed_inline_observers PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)

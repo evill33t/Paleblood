@@ -20,6 +20,7 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -395,8 +396,7 @@ static void take_placed(uint64_t buffer, uint32_t size)
 int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage stage, unsigned slot, const uint32_t *words,
                                unsigned count, char *error, size_t error_size)
 {
-    if ((unsigned)stage >= RT_SHADER_STAGES || count == 0 || count > RT_USER_DATA_MAX_WORDS ||
-        slot >= RT_USER_DATA_SLOTS || count > RT_USER_DATA_SLOTS - slot) {
+    if ((unsigned)stage >= RT_SHADER_STAGES || count == 0 || count > RT_USER_DATA_MAX_WORDS || slot + count > RT_USER_DATA_SLOTS) {
         snprintf(error, error_size, "user data: stage %u, slots %u-%u (stages 0-%d, slots 0-%d, 1-%d words)", (unsigned)stage, slot,
                  slot + count - 1, RT_SHADER_STAGES - 1, RT_USER_DATA_SLOTS - 1, RT_USER_DATA_MAX_WORDS);
         return -1;
@@ -421,6 +421,28 @@ const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t
     }
     pthread_mutex_unlock(&lists_lock);
     return calls;
+}
+
+rt_render_call *rt_render_take(uint64_t buffer, uint32_t size, size_t *count)
+{
+    pthread_mutex_lock(&lists_lock);
+    take_placed(buffer, size);
+    rt_render_call *copy = NULL;
+    *count = 0;
+    for (size_t i = 0; i < list_count; i++) {
+        if (lists[i].buffer != buffer) continue;
+        lists[i].submitted = 1;
+        size_t n = 0;
+        while (n < lists[i].count && lists[i].calls[n].offset < size) n++;
+        if (n && (copy = malloc(n * sizeof *copy))) {
+            memcpy(copy, lists[i].calls, n * sizeof *copy);
+            *count = n;
+        } else if (n) {
+            *count = SIZE_MAX; /* no memory */
+        }
+    }
+    pthread_mutex_unlock(&lists_lock);
+    return copy;
 }
 
 void rt_render_forget(void)
