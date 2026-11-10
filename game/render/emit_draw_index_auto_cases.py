@@ -87,7 +87,6 @@ def cases():
     c["stubs"] = [{"address": "0x01489c40", "argc": 0, "ret": 1}]
     yield c
 
-
     # DRAW overlaps the cursor's low DWORD. Its live advance moves the trailing
     # event into the first owned buffer; both packet destinations remain valid.
     c = packet_case("draw_live_cursor_routes_to_owned_buffer", 0, "direct", 80, 0, False)
