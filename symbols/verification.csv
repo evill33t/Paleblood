@@ -212,7 +212,7 @@ render_configure_viewport_and_guard_band,edge,,26,26,0,0,67cbc6eee27c8769,2026-1
 render_convert_constructor_record,edge,,98,98,0,0,8bd5968199c5fb5d,2026-11-10
 render_convert_record_descriptor_classification,edge,,236,236,0,0,a130fb1ef6469c41,2026-11-05
 render_draw_index,edge,,45,45,0,0,0058fe784fbd9a05,2026-11-10
-render_draw_index_inline,edge,,83,83,0,0,fbe77f249826d633,2026-11-07
+render_draw_index_inline,edge,,83,83,0,0,d5ac2f6ba0202ab5,2026-11-10
 render_draw_index_offset,edge,,42,42,0,0,5139a6e180d07681,2026-11-10
 render_emit_draw_index_auto,edge,,14,14,0,0,ee788ee6a611a7a0,2026-11-10
 render_emit_event_write,edge,,17,17,0,0,d1a112029c3a3e46,2026-11-06
