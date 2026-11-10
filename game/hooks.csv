@@ -68,7 +68,12 @@ address,replacement,system,returns
 0x014739b0,bb_render_set_depth_render_target,render,void
 0x01473fe0,bb_render_set_vgt_primitive_type,render,void
 0x014741b0,bb_render_emit_draw_index_auto,render,void
+0x01474360,bb_render_draw_index,render,void
+0x01474420,bb_render_draw_index_offset,render,void
 0x01475000,bb_render_emit_shader_link_words,render,void
+0x01475270,bb_render_set_index_type,render,void
+0x014752c0,bb_render_set_index_base,render,void
+0x01475320,bb_render_set_index_buffer_size,render,void
 0x01475370,bb_render_emit_num_instances,render,void
 0x01475da0,bb_render_emit_event_write,render,void
 0x014765e0,bb_render_configure_viewport,render,void
@@ -218,8 +223,3 @@ address,replacement,system,returns
 0x02ad5e90,bb_render_setup_swap_chain,render,i64
 0x02ad6e50,bb_render_swap_chain_submit,render,i32
 0x02fa6af0,bb_render_prepare_resource_descriptor,render,i64
-0x01475270,bb_render_set_index_type,render,void
-0x014752c0,bb_render_set_index_base,render,void
-0x01475320,bb_render_set_index_buffer_size,render,void
-0x01474360,bb_render_draw_index,render,void
-0x01474420,bb_render_draw_index_offset,render,void
