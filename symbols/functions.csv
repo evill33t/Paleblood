@@ -71,7 +71,15 @@ address,size,name,system,status,notes
 0x014741b0,156,render_emit_draw_index_auto,render,edge-verified,Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet.
 0x01475000,397,render_emit_shader_link_words,render,edge-verified,Write SPI_PS_INPUT_CNTL entries from last word to first to preserve overlapping reads; retain the unmasked count shift for zero and oversized counts.
 0x01475370,76,render_emit_num_instances,render,edge-verified,Emit NUM_INSTANCES with the complete supplied instance count.
+0x014753c0,86,render_set_ps_shader,render,edge-verified,Reserve 40 dwords; call sceGnmSetPsShader and advance the live cursor only when its 32-bit status is zero.
+0x01475480,98,render_set_vs_shader,render,edge-verified,Reserve 29 dwords; call sceGnmSetVsShader and advance the live cursor only when its 32-bit status is zero.
 0x01475da0,101,render_emit_event_write,render,edge-verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
+0x01476030,140,render_select_shader_command_mode,render,edge-verified,Write VGT_SHADER_STAGES_EN for an admitted stage selector after capacity admission.
+0x014761a0,156,render_emit_shader_descriptor16,render,edge-verified,Reserve eight command words; write the descriptor NOP control and four SET_SH_REG values at the selected stage and slot.
+0x01476240,172,render_emit_shader_descriptor32,render,edge-verified,Write 8 consecutive shader-register values at the original stage/slot-derived register index.
+0x014762f0,156,render_emit_shader_sampler16,render,edge-verified,Reserve eight command words; write the sampler NOP control and four SET_SH_REG values at the selected stage and slot.
+0x01476390,133,render_emit_shader_address,render,edge-verified,Reserve four command words; SET_SH_REG writes the address as two consecutive register values.
+0x01476420,126,render_emit_shader_word,render,edge-verified,Reserve three command words; SET_SH_REG writes one value at the stage and slot register index.
 0x014765e0,238,render_configure_viewport,render,edge-verified,"Write viewport ZMIN/ZMAX, then X/Y/Z scale and offset values for the selected viewport. Capture all six borrowed source words before output; retain the live and captured cursor publications."
 0x01476790,135,render_configure_screen_scissor,render,edge-verified,Write PA_SC_SCREEN_SCISSOR_TL/BR using the low 16 bits of each supplied coordinate. Packet stores may overlap the cursor; its final increment reads the stored value after those writes.
 0x01476980,93,render_emit_pa_cl_vte_cntl,render,edge-verified,Write PA_CL_VTE_CNTL viewport-transform enable/format bits after capacity admission.
@@ -220,11 +228,3 @@ address,size,name,system,status,notes
 0x02ad5e90,3005,render_setup_swap_chain,render,edge-verified,"Allocate and register swap-chain buffers, initialize cached resource data and tone curves, and retain partial publications on the corresponding failure paths."
 0x02ad6e50,499,render_swap_chain_submit,render,edge-verified,"Owned-thread flip polling, source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings."
 0x02fa6af0,2214,render_prepare_resource_descriptor,render,edge-verified,Build the resource descriptor and requirements through ordered original helpers; preserve partial writes on errors and live parameter reads between calls.
-0x014753c0,86,render_set_ps_shader,render,edge-verified,Reserve 40 dwords; call sceGnmSetPsShader and advance the live cursor only when its 32-bit status is zero.
-0x01475480,98,render_set_vs_shader,render,edge-verified,Reserve 29 dwords; call sceGnmSetVsShader and advance the live cursor only when its 32-bit status is zero.
-0x01476030,140,render_select_shader_command_mode,render,edge-verified,Write VGT_SHADER_STAGES_EN for an admitted stage selector after capacity admission.
-0x014761a0,156,render_emit_shader_descriptor16,render,edge-verified,Reserve eight command words; write the descriptor NOP control and four SET_SH_REG values at the selected stage and slot.
-0x01476240,172,render_emit_shader_descriptor32,render,edge-verified,Write 8 consecutive shader-register values at the original stage/slot-derived register index.
-0x014762f0,156,render_emit_shader_sampler16,render,edge-verified,Reserve eight command words; write the sampler NOP control and four SET_SH_REG values at the selected stage and slot.
-0x01476390,133,render_emit_shader_address,render,edge-verified,Reserve four command words; SET_SH_REG writes the address as two consecutive register values.
-0x01476420,126,render_emit_shader_word,render,edge-verified,Reserve three command words; SET_SH_REG writes one value at the stage and slot register index.
