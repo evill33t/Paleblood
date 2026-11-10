@@ -5,8 +5,9 @@
    manual.
 
    Buffers are reached as the translator expects: through buffer descriptors in the user data
-   (push constants) whose base address is the Vulkan buffer's device address. Without a Vulkan 1.2
-   device with buffer device addresses the test reports itself skipped (exit 77). Runs on the
+   (push constants) with 40-bit guest bases translated to the Vulkan buffer's device addresses.
+   The separate --wave64 test needs a native 64-lane subgroup for wave-wide branches. Without
+   the required device capability, that test reports itself skipped (exit 77). Runs on the
    maintainer's machine hold the shared GPU lock (tools/run_game.sh's /mnt/sdb1/bb/gpu.lock). */
 #include "runtime/gcn_spirv.h"
 
@@ -78,12 +79,23 @@ static uint32_t bits(float f)
     return u;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    const int wave64_only = argc == 2 && strcmp(argv[1], "--wave64") == 0;
+    if (argc != 1 && !wave64_only) return 2;
     gpu g = {0};
     if (open_gpu(&g)) {
         fprintf(stderr, "no Vulkan 1.2 device with buffer device addresses: skipped\n");
         return SKIPPED;
+    }
+    if (wave64_only) {
+        VkPhysicalDeviceSubgroupProperties subgroup = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+        VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &subgroup};
+        vkGetPhysicalDeviceProperties2(g.physical, &properties);
+        if (subgroup.subgroupSize != LANES) {
+            fprintf(stderr, "wave-wide ballot requires a 64-lane subgroup; device reports %u: skipped\n", subgroup.subgroupSize);
+            return SKIPPED;
+        }
     }
     gpu_buffer in, out;
     if (make_buffer(&g, &in) || make_buffer(&g, &out)) {
@@ -91,10 +103,25 @@ int main(void)
         return 1;
     }
     uint32_t user[USER_DATA_WORDS] = {0};
-    descriptor(user, &in);
-    descriptor(user + 4, &out);
+    /* Keep shader inputs in one guest window, independent of the driver's address width. */
+    const uint64_t buffer_offset = in.address - UINT64_C(0x100000000);
+    address_offset = buffer_offset;
+    if (descriptor(user, &in, buffer_offset) || descriptor(user + 4, &out, buffer_offset)) {
+        fprintf(stderr, "the shader buffers do not fit one 40-bit guest window\n");
+        return 1;
+    }
     float *const in_floats = in.mapped;
     uint32_t *const in_words = in.mapped, *const out_words = out.mapped;
+
+    if (wave64_only) {
+        CHECK(run(&g, compare_exec, sizeof compare_exec / sizeof compare_exec[0], user) == 0);
+        for (int i = 0; i < LANES; i++) {
+            CHECK(out_words[2 * i] == (i < 8 ? 1u : 0u) + 64u);
+            CHECK(out_words[2 * i + 1] == 5u);
+        }
+        vkDeviceWaitIdle(g.device);
+        return failures != 0;
+    }
 
     /* out[i] = in[i] * 2.5 + 1 */
     for (int i = 0; i < LANES; i++) in_floats[i] = (float)i * 0.5f;
@@ -148,10 +175,35 @@ int main(void)
     }
     for (int i = 0; i < LANES; i++) in_floats[i] = (float)i * 0.5f;
     memset(out.mapped, 0, BUFFER_BYTES);
-    address_offset = GUEST_DISTANCE;
+    address_offset = buffer_offset + GUEST_DISTANCE;
     CHECK(run(&g, scale_add, sizeof scale_add / sizeof scale_add[0], guest_user) == 0);
-    address_offset = 0;
+    address_offset = buffer_offset;
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits((float)i * 0.5f * 2.5f + 1.0f));
+
+    /* Range checking (CLRX's GCN memory handling notes): an access outside the descriptor's range
+       reads 0 and writes nothing. Stride 0: NUM_RECORDS counts bytes, so with 40 dwords to read and
+       32 to write, lanes 40 and up read 0 (out = 1.0) and lanes 32 and up store nothing. */
+    {
+        uint32_t range_user[USER_DATA_WORDS];
+        memcpy(range_user, user, sizeof range_user);
+        range_user[2] = 40 * 4, range_user[6] = 32 * 4;
+        for (int i = 0; i < LANES; i++) in_floats[i] = (float)i * 0.5f;
+        memset(out.mapped, 0xaa, BUFFER_BYTES);
+        CHECK(run(&g, scale_add, sizeof scale_add / sizeof scale_add[0], range_user) == 0);
+        for (int i = 0; i < LANES; i++)
+            CHECK(out_words[i] == (i >= 32 ? 0xaaaaaaaau : bits(i < 40 ? (float)i * 0.5f * 2.5f + 1.0f : 1.0f)));
+        /* A stride (4 bytes) and an index (the lane): NUM_RECORDS counts records, so lanes 20 and up read 0. */
+        range_user[1] |= 4u << 16, range_user[2] = 20, range_user[6] = BUFFER_BYTES;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, indexed_scale_add, sizeof indexed_scale_add / sizeof indexed_scale_add[0], range_user) == 0);
+        for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits(i < 20 ? (float)i * 0.5f * 2.5f + 1.0f : 1.0f));
+        /* An offset at the stride is out of range whatever the index: every lane reads 0. */
+        range_user[2] = LANES;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, indexed_scale_add_past_stride, sizeof indexed_scale_add_past_stride / sizeof indexed_scale_add_past_stride[0],
+                  range_user) == 0);
+        for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits(1.0f));
+    }
 
     /* Branches and EXEC. */
     memset(out.mapped, 0, BUFFER_BYTES);
@@ -165,13 +217,6 @@ int main(void)
     memset(out.mapped, 0, BUFFER_BYTES);
     CHECK(run(&g, vector_loop, sizeof vector_loop / sizeof vector_loop[0], user) == 0);
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == 10u * ((uint32_t)i & 3));
-
-    memset(out.mapped, 0, BUFFER_BYTES);
-    CHECK(run(&g, compare_exec, sizeof compare_exec / sizeof compare_exec[0], user) == 0);
-    for (int i = 0; i < LANES; i++) {
-        CHECK(out_words[2 * i] == (i < 8 ? 1u : 0u) + 64u);
-        CHECK(out_words[2 * i + 1] == 5u);
-    }
 
     memset(out.mapped, 0xaa, BUFFER_BYTES);
     CHECK(run(&g, masked_store, sizeof masked_store / sizeof masked_store[0], user) == 0);
