@@ -541,10 +541,20 @@ extern "C" void rt_executor_reset(rt_executor *x)
 extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, char *error, size_t error_size)
 {
     if (!x || x->failed) return failed(error, error_size, "a usable executor is required");
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(buffer, bytes, &count);
+    return rt_executor_run_calls(x, calls, count, error, error_size);
+}
+
+/* The renderer copies calls before queuing them and may split them at a GPU step.
+   Consume that copy directly, retaining the state set by earlier fragments. */
+extern "C" int rt_executor_run_calls(rt_executor *x, const rt_render_call *calls, size_t count,
+                                      char *error, size_t error_size)
+{
+    if (!x || x->failed) return failed(error, error_size, "a usable executor is required");
     @autoreleasepool {
         @try {
             try {
-                size_t count = 0; const rt_render_call *calls = rt_render_submitted(buffer, bytes, &count);
                 MetalState &state = x->state;
                 for (size_t i = 0; i < count; ++i) {
                     const rt_render_call &call = calls[i];

@@ -1424,6 +1424,35 @@ int main(void)
     munmap(pool, POOL_SIZE);
     size = record_draw(14, at(0x100000), 16, 16, 0, scale, translate, COLORS);
     if (!run(x, 14, size)) check_gradient(x, at(0x100000), 16, 16, 0);
+
+    /* Queued calls survive the recorder being cleared. GPU steps can split the
+       array between state setup and its draw without resetting that state. */
+    CHECK(rt_executor_run_calls(x, NULL, 0, error, sizeof error) == 0);
+    CHECK(rt_executor_run_calls(NULL, NULL, 0, error, sizeof error) == -1);
+    scenarios++;
+    for (unsigned split = 0; split < 2; ++split) {
+        const uint64_t target = at(0xd60000 + split * 0x10000);
+        rt_executor_reset(x);
+        size = record_draw(420 + split, target, 16, 16, 0, scale, translate, COLORS);
+        size_t count = 0;
+        const rt_render_call *recorded = rt_render_submitted(420 + split, size, &count);
+        CHECK(count > 1);
+        rt_render_call *owned = malloc(count * sizeof *owned);
+        CHECK(owned != NULL);
+        if (owned && count > 1) {
+            memcpy(owned, recorded, count * sizeof *owned);
+            rt_render_forget();
+            if (split) {
+                CHECK(rt_executor_run_calls(x, owned, count - 1, error, sizeof error) == 0);
+                CHECK(rt_executor_run_calls(x, owned + count - 1, 1, error, sizeof error) == 0);
+            } else {
+                CHECK(rt_executor_run_calls(x, owned, count, error, sizeof error) == 0);
+            }
+            check_gradient(x, target, 16, 16, 0);
+        }
+        free(owned);
+        scenarios++;
+    }
     rt_executor_close(x); x = NULL;
     rt_executor_close(NULL);
     scenarios++;
