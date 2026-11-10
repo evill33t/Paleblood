@@ -206,8 +206,8 @@ render_command_submit_snapshot,edge,,18,18,0,0,6fb293f54adcdc2b,2026-11-10
 render_compose_record_encoding_fields,edge,,30,30,0,0,c6bfe3dc4c1e12ad,2026-11-05
 render_configure_record_shader,edge,,18,18,0,0,f676035c0f6f2a49,2026-11-10
 render_configure_record_shader_secondary,edge,,191,191,0,0,5e297be297985947,2026-11-10
-render_configure_screen_scissor,edge,,17,17,0,0,5b83483af9d7ccef,2026-11-07
-render_configure_viewport,edge,,14,14,0,0,e47384c12ae7a5ad,2026-11-07
+render_configure_screen_scissor,edge,,17,17,0,0,f7c3ae14003fd983,2026-11-10
+render_configure_viewport,edge,,14,14,0,0,9fe7b8ece42c4d53,2026-11-10
 render_configure_viewport_and_guard_band,edge,,26,26,0,0,67cbc6eee27c8769,2026-11-10
 render_convert_constructor_record,edge,,98,98,0,0,8bd5968199c5fb5d,2026-11-10
 render_convert_record_descriptor_classification,edge,,236,236,0,0,a130fb1ef6469c41,2026-11-05
