@@ -112,10 +112,10 @@ static void *coordinate(void *opaque)
             if (!window) {[self fail:"cannot create AppKit window"];return;}
             window.title=@"Paleblood";window.releasedWhenClosed=NO;window.delegate=self;
             NSView *view=[[NSView alloc] initWithFrame:window.contentView.bounds];
-            view.wantsLayer=YES;layer=[CAMetalLayer layer];
+            layer=[CAMetalLayer layer];
             if (!view || !layer) {[self fail:"cannot create AppKit Metal view/layer"];return;}
             layer.frame=view.bounds;
-            layer.contentsScale=window.backingScaleFactor;layer.framebufferOnly=YES;view.layer=layer;
+            layer.contentsScale=window.backingScaleFactor;layer.framebufferOnly=YES;view.layer=layer;view.wantsLayer=YES;
             window.contentView=view;[window center];[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];
         }
         (void)rt_window_mailbox_opened(mailbox); /* A busy publisher is retried on an ordinary tick. */
