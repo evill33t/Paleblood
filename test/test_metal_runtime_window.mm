@@ -6,12 +6,15 @@
 #import <Metal/Metal.h>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sched.h>
 #include <vector>
-static std::atomic<unsigned> captures{0},callbacks{0},positive_times{0},close_requests{0},failures{0},acquisitions{0},last_callback{0},last_positive{0},geometry_checks{0};
+static std::atomic<unsigned> named_captures{0},callbacks{0},positive_times{0},close_requests{0},failures{0},acquisitions{0},last_callback{0},last_positive{0},geometry_checks{0},submissions{0},startup_submissions{0},named_positive_times{0};
+static std::atomic<unsigned> callback_acquisition[8],gpu_status[8],literal_match[8];
+static std::atomic<double> presented_time[8];
 @interface PBOwnedWindowLayer : CAMetalLayer
 @end
 @implementation PBOwnedWindowLayer
@@ -21,8 +24,11 @@ static std::atomic<unsigned> captures{0},callbacks{0},positive_times{0},close_re
     if (drawable) {
         const unsigned acquisition=acquisitions.fetch_add(1)+1;
         [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
-            if (shown.presentedTime>0) {positive_times.fetch_add(1);last_positive.store(acquisition);}
+            const double time=shown.presentedTime;
+            if (acquisition<8) presented_time[acquisition].store(time);
+            if (time>0) {positive_times.fetch_add(1);last_positive.store(acquisition);if(acquisition>=6) named_positive_times.fetch_add(1);}
             callbacks.fetch_add(1);last_callback.store(acquisition);
+            if (acquisition<8) callback_acquisition[acquisition].store(acquisition,std::memory_order_release);
         }];
     }
     return drawable;
@@ -42,9 +48,10 @@ static rt_metal_status observed_present(rt_metal_offscreen *context,void *native
 {
     if (capture || !NSThread.isMainThread) {failures.fetch_add(1);return RT_METAL_INVALID_ARGUMENT;}
     CAMetalLayer *layer=(__bridge CAMetalLayer *)native_layer;
-    const unsigned phase=captures.load();const size_t width=phase?1:7,height=phase?5:1;
+    const unsigned phase=submissions.load();const bool warmup=phase<5,column=phase==6;
+    const size_t width=column?1:7,height=column?5:1;
     if (layer.drawableSize.width!=width || layer.drawableSize.height!=height) failures.fetch_add(1);
-    if (phase) {
+    if (column) {
         NSWindow *window=NSApp.keyWindow;NSView *view=window.contentView;
         const auto geometry_ok=[&] {
             return window && view && view.bounds.size.width==140 && view.bounds.size.height==70 &&
@@ -77,10 +84,13 @@ static rt_metal_status observed_present(rt_metal_offscreen *context,void *native
     layer.framebufferOnly=NO; /* Only this test requests the primitive's real pre-present capture. */
     const rt_metal_status result=rt_metal_offscreen_present(context,native_layer,&observed,timeout,error,error_size);
     if (result==RT_METAL_OK) {
-        const uint8_t *literal=phase?column_bgra:row_bgra;
-        if (std::memcmp(bytes.data(),literal,bytes.size())) failures.fetch_add(1);
-        if (!phase) [NSApp.keyWindow setContentSize:NSMakeSize(140,70)];
-        captures.fetch_add(1);
+        const uint8_t *literal=column?column_bgra:row_bgra;
+        const bool matches=!std::memcmp(bytes.data(),literal,bytes.size());
+        if (!matches) failures.fetch_add(1);
+        if (phase<7) {literal_match[phase+1].store(matches);gpu_status[phase+1].store((unsigned)result);}
+        if (phase==5) [NSApp.keyWindow setContentSize:NSMakeSize(140,70)];
+        if (warmup) startup_submissions.fetch_add(1);else named_captures.fetch_add(1);
+        submissions.fetch_add(1);
     }
     return result;
 }
@@ -107,12 +117,20 @@ static int owned_boot(void *unused,const sigset_t *previous)
     (void)unused;
     if (NSThread.isMainThread || pthread_sigmask(SIG_SETMASK,previous,nullptr)) return 1;
     if (rt_display_window_open(7,1)) return 1;
-    alignas(uint32_t) uint8_t row[sizeof row_bgra];std::memcpy(row,row_bgra,sizeof row);
-    rt_display_window_show((const uint32_t *)row,7,1);std::memset(row,0,sizeof row);
-    if (!wait_for(captures,1) || !wait_for(callbacks,1) || !wait_for(positive_times,1) || !wait_for(last_callback,1) || !wait_for(last_positive,1)) return 1;
-    alignas(uint32_t) uint8_t column[sizeof column_bgra];std::memcpy(column,column_bgra,sizeof column);
-    rt_display_window_show((const uint32_t *)column,1,5);std::memset(column,0,sizeof column);
-    if (!wait_for(captures,2) || !wait_for(callbacks,2) || !wait_for(positive_times,2) || !wait_for(last_callback,2) || !wait_for(last_positive,2)) return 1;
+    for (unsigned acquisition=1;acquisition<=7;++acquisition) {
+        const bool warmup=acquisition<=5,column=acquisition==7;
+        alignas(uint32_t) uint8_t pixels[sizeof row_bgra];
+        const size_t bytes=column?sizeof column_bgra:sizeof row_bgra;
+        std::memcpy(pixels,column?column_bgra:row_bgra,bytes);
+        rt_display_window_show((const uint32_t *)pixels,column?1:7,column?5:1);std::memset(pixels,0,sizeof pixels);
+        if (!wait_for(submissions,acquisition) || !wait_for(callback_acquisition[acquisition],acquisition)) return 1;
+        const double time=presented_time[acquisition].load();
+        std::printf("runtime_window_frame id=%s%u role=%s acquisition=%u callback_acquisition=%u presented_time=%.17g GPU_status=%u literal_match=%u named_capture=%u\n",
+            warmup?"startup/":"named/",warmup?acquisition:acquisition-5,warmup?"startup":column?"column":"row",
+            acquisition,callback_acquisition[acquisition].load(),time,gpu_status[acquisition].load(),literal_match[acquisition].load(),warmup?0u:1u);
+        std::fflush(stdout);
+        if (!std::isfinite(time) || time<0 || (!warmup && time<=0)) return 1;
+    }
     dispatch_async(dispatch_get_main_queue(),^{[NSApp.keyWindow performClose:nil];});
     if (!wait_for(close_requests,1)) return 1;
     return failures.load()?1:0;
@@ -120,7 +138,7 @@ static int owned_boot(void *unused,const sigset_t *previous)
 int main(void)
 {
     const int result=rt_display_window_run(owned_boot,nullptr);
-    std::printf("Metal runtime window: captures=%u callbacks=%u positive_times=%u close_requests=%u geometry_checks=%u failures=%u rc=%d\n",
-        captures.load(),callbacks.load(),positive_times.load(),close_requests.load(),geometry_checks.load(),failures.load(),result);
-    return result || failures.load() || geometry_checks.load()!=3 || acquisitions.load()!=2 || last_callback.load()!=2 || last_positive.load()!=2 || captures.load()!=2 || callbacks.load()!=2 || positive_times.load()!=2 || close_requests.load()!=1 ?1:0;
+    std::printf("Metal runtime window: startup_submissions=%u submissions=%u named_captures=%u callbacks=%u positive_times=%u named_positive_times=%u close_requests=%u geometry_checks=%u failures=%u rc=%d\n",
+        startup_submissions.load(),submissions.load(),named_captures.load(),callbacks.load(),positive_times.load(),named_positive_times.load(),close_requests.load(),geometry_checks.load(),failures.load(),result);
+    return result || failures.load() || geometry_checks.load()!=3 || startup_submissions.load()!=5 || submissions.load()!=7 || acquisitions.load()!=7 || last_callback.load()!=7 || last_positive.load()!=7 || named_captures.load()!=2 || callbacks.load()!=7 || named_positive_times.load()!=2 || close_requests.load()!=1 ?1:0;
 }
