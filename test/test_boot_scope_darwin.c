@@ -381,7 +381,7 @@ static void exercise_window(void)
         WCHECK(!atomic_load(&notifications));
     else {bounded_wait(&notifications,1);WCHECK(atomic_load(&notifications)==1);}
     WCHECK(atomic_load(&owner_alarms)==(mode==WINDOW_ALARM || mode==WINDOW_OPEN_ALARM ?1u:0u));
-    WCHECK(atomic_load(&owner_notifications)==atomic_load(&notifications));
+    WCHECK(atomic_load(&owner_notifications)==(unsigned)atomic_load(&notifications));
     if (scope_mailbox) rt_window_mailbox_destroy(scope_mailbox);
     printf("Darwin window protocol case%d: %u checks, %u owner jumps, %u notifications\n",mode,atomic_load(&window_checks),atomic_load(&owner_jumps),atomic_load(&notifications));
     fflush(stdout);_exit(0);
