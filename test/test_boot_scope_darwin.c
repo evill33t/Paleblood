@@ -76,15 +76,16 @@ static void (*observed_signal_handler)(int,siginfo_t *,void *);
 static sigset_t pre_gui_mask;
 static rt_window_mailbox *scope_mailbox;
 #define WCHECK(value) do {atomic_fetch_add(&window_checks,1);if (!(value)) {fprintf(stderr,"window scope%d line%d: %s\n",mode,__LINE__,#value);_exit(1);}} while(0)
-static void bounded_wait(atomic_int *value,int target)
+static void bounded_wait_at(atomic_int *value,int target,unsigned site)
 {
     struct timespec start,now;WCHECK(clock_gettime(CLOCK_MONOTONIC,&start)==0);
     while (atomic_load_explicit(value,memory_order_acquire)<target) {
         WCHECK(clock_gettime(CLOCK_MONOTONIC,&now)==0);
-        if (now.tv_sec-start.tv_sec>=4) {fprintf(stderr,"window scope%d bounded handshake expired\n",mode);_exit(1);}
+        if (now.tv_sec-start.tv_sec>=4) {fprintf(stderr,"window scope%d bounded handshake expired site%u value%d target%d stage%d gate%d active%d stopped%d alarms%u jumps%u\n",mode,site,atomic_load(value),target,atomic_load(&window_stage),atomic_load(&gui_gate),atomic_load(&recovery_active),atomic_load(&stopped),atomic_load(&owner_alarms),atomic_load(&owner_jumps));_exit(1);}
         sched_yield();
     }
 }
+#define bounded_wait(value,target) bounded_wait_at((value),(target),__LINE__)
 #endif
 #define CHECK(value) do {++checks;if (!(value)) {fprintf(stderr,"scope %d check %d: %s\n",mode,__LINE__,#value);_exit(1);}} while (0)
 static _Noreturn void controlled_longjmp(sigjmp_buf target,int value)
@@ -310,7 +311,9 @@ static void *window_coordinator(void *unused)
         if (mode==WINDOW_BETWEEN) {atomic_store(&window_stage,1);bounded_wait(&gui_gate,1);}
         if (mode==WINDOW_GUI_PAYLOAD) {atomic_store(&window_stage,1);bounded_wait(&gui_in_publish,1);}
         terminal_call=(mode==WINDOW_RETURN || mode==WINDOW_BEATS_RETURN);
-        run_guest(NULL,NULL,NULL,NULL,NULL,mode==WINDOW_ALARM || mode==WINDOW_OPEN_ALARM ?1:3);
+        /* Case18 arms its real process alarm only after the GUI observes actual opening.
+           Case15 retains the ordinary production timeout1 path unchanged. */
+        run_guest(NULL,NULL,NULL,NULL,NULL,mode==WINDOW_ALARM ?1:mode==WINDOW_OPEN_ALARM ?0:3);
         if (mode<=WINDOW_BETWEEN || mode==WINDOW_GUI_PAYLOAD) WCHECK(entries==1); /* Qualification only; no guest entry. */
         else WCHECK(entries==2);
     }
@@ -352,11 +355,23 @@ static void exercise_window(void)
     else if (mode==WINDOW_BEATS_RETURN) bounded_wait(&window_stage,8);
     else bounded_wait(&window_stage,1);
     if (mode==WINDOW_OPEN_CLOSE || mode==WINDOW_OPEN_ALARM) {
-        rt_window_frame frame={0};
-        while (!rt_window_mailbox_poll(scope_mailbox,&frame) || !frame.opening) sched_yield();
+        rt_window_frame frame={0};struct timespec start,now;
+        WCHECK(clock_gettime(CLOCK_MONOTONIC,&start)==0);
+        while (!rt_window_mailbox_poll(scope_mailbox,&frame) || !frame.opening) {
+            WCHECK(atomic_load(&window_stage)<9); /* Recovery before opening is a test failure. */
+            WCHECK(clock_gettime(CLOCK_MONOTONIC,&now)==0);
+            if (now.tv_sec-start.tv_sec>=4) {fprintf(stderr,"window scope%d opening poll expired stage%d active%d stopped%d alarms%u jumps%u\n",mode,atomic_load(&window_stage),atomic_load(&recovery_active),atomic_load(&stopped),atomic_load(&owner_alarms),atomic_load(&owner_jumps));_exit(1);}
+            sched_yield();
+        }
         WCHECK(frame.open_width==7 && frame.open_height==1);
-        if (mode==WINDOW_OPEN_ALARM) bounded_wait(&window_stage,9);
-        if (mode==WINDOW_OPEN_ALARM) rt_window_mailbox_cancel(scope_mailbox);
+        if (mode==WINDOW_OPEN_ALARM) {
+            WCHECK(arms==1 && atomic_load(&window_stage)==1 && atomic_load(&recovery_active) && !atomic_load(&stopped));
+            WCHECK(!atomic_load(&owner_alarms) && !atomic_load(&owner_jumps));
+            WCHECK(alarm(1)==0);++arms; /* Real process timer; GUI retains its blocked SIGALRM. */
+            bounded_wait(&window_stage,9);
+            WCHECK(atomic_load(&owner_alarms)==1 && atomic_load(&owner_jumps)==1);
+            rt_window_mailbox_cancel(scope_mailbox);
+        }
     }
     rt_boot_window_request_stop("owned GUI close","complete close payload");
     if (mode==WINDOW_OPEN_CLOSE) rt_window_mailbox_cancel(scope_mailbox);
@@ -373,6 +388,7 @@ static void exercise_window(void)
     WCHECK(sigismember(&gui_mask,SIGALRM)==1 && sigismember(&gui_mask,SIGUSR1)==1 && sigismember(&gui_mask,SIGUSR2)==1);
     atomic_store(&gui_gate,2);bounded_wait(&window_stage,10);
     WCHECK(!atomic_load(&window_ready) && pthread_join(coordinator,NULL)==0);
+    if (mode==WINDOW_OPEN_ALARM) WCHECK(arms==2); /* Qualification plus observed-open timeout. */
     if (mode==WINDOW_ALARM || mode==WINDOW_OPEN_ALARM || mode==WINDOW_FAULT || mode==WINDOW_QUALIFY_FAULT || mode==WINDOW_ACTIVE || mode==WINDOW_WORKER || mode==WINDOW_OPEN_CLOSE || mode==WINDOW_BEATS_WORKER)
         WCHECK(atomic_load(&owner_jumps)==1);
     else if (mode==WINDOW_RETURN || mode==WINDOW_BEATS_RETURN || mode==WINDOW_GUI_PAYLOAD) WCHECK(!atomic_load(&owner_jumps));
