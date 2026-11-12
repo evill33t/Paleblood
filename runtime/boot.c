@@ -56,6 +56,7 @@
 #include "runtime/syslib.h"
 #if defined(PB_METAL_WINDOW)
 #include "runtime/window_boot.h"
+#include <time.h>
 #endif
 
 #if defined(__APPLE__) && defined(__MACH__)
@@ -177,6 +178,112 @@ static char runtime_stop_function[128], runtime_stop_reason[256];
 static atomic_int window_ready, window_pending_close;
 static atomic_flag window_request_seen=ATOMIC_FLAG_INIT;
 static char window_stop_function[128],window_stop_reason[256];
+#endif
+
+#if defined(PB_METAL_WINDOW)
+/* Process alarms can remain pending on AppKit's blocked main thread. This timer sends only
+   to the coordinator. All owner operations hold ALRM/USR1 blocked through mutex unlock. */
+enum { WINDOW_TIMER_IDLE, WINDOW_TIMER_ARMED, WINDOW_TIMER_FIRED };
+static struct {
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    pthread_t thread,owner;
+    uint64_t generation;
+    struct timespec deadline;
+    int state,shutdown,started;
+} window_timer;
+
+static int window_deadline_reached(const struct timespec *now,const struct timespec *deadline)
+{
+    return now->tv_sec>deadline->tv_sec || (now->tv_sec==deadline->tv_sec && now->tv_nsec>=deadline->tv_nsec);
+}
+static void *window_timer_main(void *unused)
+{
+    (void)unused;
+    if (pthread_mutex_lock(&window_timer.lock)) _exit(125);
+    while (!window_timer.shutdown) {
+        while (!window_timer.shutdown && window_timer.state!=WINDOW_TIMER_ARMED)
+            if (pthread_cond_wait(&window_timer.changed,&window_timer.lock)) _exit(125);
+        if (window_timer.shutdown) break;
+        const uint64_t generation=window_timer.generation;
+        const struct timespec deadline=window_timer.deadline;
+        struct timespec now;
+        if (clock_gettime(CLOCK_UPTIME_RAW,&now)) _exit(125);
+        if (!window_deadline_reached(&now,&deadline)) {
+            struct timespec remaining={deadline.tv_sec-now.tv_sec,deadline.tv_nsec-now.tv_nsec};
+            if (remaining.tv_nsec<0) {remaining.tv_nsec+=1000000000;--remaining.tv_sec;}
+            const int waited=pthread_cond_timedwait_relative_np(&window_timer.changed,&window_timer.lock,&remaining);
+            if (waited && waited!=ETIMEDOUT) _exit(125);
+        }
+        if (window_timer.shutdown || generation!=window_timer.generation || window_timer.state!=WINDOW_TIMER_ARMED) continue;
+        if (clock_gettime(CLOCK_UPTIME_RAW,&now)) _exit(125);
+        if (!window_deadline_reached(&now,&deadline)) continue;
+        window_timer.state=WINDOW_TIMER_FIRED;
+        /* Disarm cannot finish before this send. No GUI/mailbox lock or acknowledgment. */
+        if (pthread_kill(window_timer.owner,SIGALRM)) _exit(125);
+    }
+    if (pthread_mutex_unlock(&window_timer.lock)) _exit(125);
+    return NULL;
+}
+static int window_timer_start(void)
+{
+    sigset_t mask;
+    if (pthread_sigmask(SIG_SETMASK,NULL,&mask) || sigismember(&mask,SIGALRM)!=1 ||
+        sigismember(&mask,SIGUSR1)!=1 || window_timer.started) return -1;
+    if (pthread_mutex_init(&window_timer.lock,NULL)) return -1;
+    if (pthread_cond_init(&window_timer.changed,NULL)) {pthread_mutex_destroy(&window_timer.lock);return -1;}
+    window_timer.owner=pthread_self();window_timer.generation=0;
+    window_timer.state=WINDOW_TIMER_IDLE;window_timer.shutdown=0;
+    if (pthread_create(&window_timer.thread,NULL,window_timer_main,NULL)) {
+        pthread_cond_destroy(&window_timer.changed);pthread_mutex_destroy(&window_timer.lock);return -1;
+    }
+    window_timer.started=1;return 0;
+}
+static void window_timer_arm(unsigned seconds)
+{
+    if (pthread_mutex_lock(&window_timer.lock)) _exit(125);
+    ++window_timer.generation;
+    window_timer.state=seconds ? WINDOW_TIMER_ARMED:WINDOW_TIMER_IDLE;
+    if (seconds) {
+        if (clock_gettime(CLOCK_UPTIME_RAW,&window_timer.deadline)) _exit(125);
+        window_timer.deadline.tv_sec+=seconds;
+    }
+    if (pthread_cond_signal(&window_timer.changed) || pthread_mutex_unlock(&window_timer.lock)) _exit(125);
+}
+static int window_timer_disarm(void)
+{
+    if (pthread_mutex_lock(&window_timer.lock)) _exit(125);
+    struct timespec now;
+    if (clock_gettime(CLOCK_UPTIME_RAW,&now)) _exit(125);
+    const int due=window_timer.state==WINDOW_TIMER_FIRED || (window_timer.state==WINDOW_TIMER_ARMED &&
+        window_deadline_reached(&now,&window_timer.deadline));
+    ++window_timer.generation;window_timer.state=WINDOW_TIMER_IDLE;
+    if (pthread_cond_signal(&window_timer.changed) || pthread_mutex_unlock(&window_timer.lock)) _exit(125);
+    return due;
+}
+static void window_timer_finish(void)
+{
+    if (!window_timer.started) return;
+    sigset_t owned,previous,pending;
+    if (sigemptyset(&owned) || sigaddset(&owned,SIGALRM) || sigaddset(&owned,SIGUSR1) ||
+        pthread_sigmask(SIG_BLOCK,&owned,&previous)) _exit(125);
+    if (pthread_mutex_lock(&window_timer.lock)) _exit(125);
+    /* Every returned recovery scope has already disarmed and accounted its deadline. */
+    if (window_timer.state!=WINDOW_TIMER_IDLE) _exit(125);
+    ++window_timer.generation;window_timer.shutdown=1;
+    if (pthread_cond_signal(&window_timer.changed) || pthread_mutex_unlock(&window_timer.lock) ||
+        pthread_join(window_timer.thread,NULL)) _exit(125);
+    for (;;) {
+        if (sigpending(&pending)) _exit(125);
+        if (sigismember(&pending,SIGALRM)!=1) break;
+        sigset_t alarm_set;int received=0;
+        if (sigemptyset(&alarm_set) || sigaddset(&alarm_set,SIGALRM) ||
+            sigwait(&alarm_set,&received) || received!=SIGALRM) _exit(125);
+    }
+    if (pthread_cond_destroy(&window_timer.changed) || pthread_mutex_destroy(&window_timer.lock)) _exit(125);
+    window_timer.started=0;
+    if (pthread_sigmask(SIG_SETMASK,&previous,NULL)) _exit(125);
+}
 #endif
 
 /* Claims the run's one stop; false when another thread stopped first. */
@@ -372,18 +479,29 @@ static __attribute__((noinline)) void run_guest(void *fn, void *a, void *b, void
         pthread_sigmask(SIG_BLOCK,&owned,&previous)) _exit(125);
     if (!sigsetjmp(back_to_host,1)) {
         atomic_store(&recovery_active,1);
+#if defined(PB_METAL_WINDOW)
+        if (window_timer.started && !atomic_load_explicit(&stopped,memory_order_acquire))
+            window_timer_arm((unsigned)timeout);
+#endif
         if (pthread_sigmask(SIG_SETMASK,&previous,NULL)) _exit(125);
         if (!atomic_load_explicit(&stopped,memory_order_acquire)) {
             enum outcome expected=RETURNED;
             (void)atomic_compare_exchange_strong(&outcome,&expected,RUNNING);
-            alarm((unsigned)timeout);
+#if defined(PB_METAL_WINDOW)
+            if (!window_timer.started)
+#endif
+                alarm((unsigned)timeout);
             rt_boot_call(fn,a,stack_top,b,c);
             expected=RUNNING;
             (void)atomic_compare_exchange_strong(&outcome,&expected,RETURNED);
         }
     }
     if (pthread_sigmask(SIG_BLOCK,&owned,NULL)) _exit(125);
-    alarm(0);
+#if defined(PB_METAL_WINDOW)
+    const int deadline_expired=window_timer.started ? window_timer_disarm():0;
+    if (!window_timer.started)
+#endif
+        alarm(0);
     /* Disarm and consume pending timeouts before leaving this recovery frame. A pending
        timeout is a result, not a successful near-pass; worker payload publication wins first. */
     for (;;) {
@@ -396,6 +514,12 @@ static __attribute__((noinline)) void run_guest(void *fn, void *a, void *b, void
             atomic_store_explicit(&stopped,2,memory_order_release);
         }
     }
+#if defined(PB_METAL_WINDOW)
+    if (deadline_expired && claim_stop()) {
+        outcome=TIMEOUT;fault_signal=SIGALRM;fault_rip=fault_address=0;
+        atomic_store_explicit(&stopped,2,memory_order_release);
+    }
+#endif
     if (terminal_call && claim_stop()) {
         outcome=RETURNED;
         atomic_store_explicit(&stopped,2,memory_order_release);
@@ -1078,6 +1202,11 @@ static int run_boot(boot_options *options,const sigset_t *pre_gui_mask)
     rt_thread_register_main(stack, STACK_SIZE);
 #if defined(__APPLE__) && defined(__MACH__)
     if (install_boot_signals()) {fprintf(stderr,"pbboot: cannot install guest recovery: %s\n",strerror(errno));return 3;}
+#if defined(PB_METAL_WINDOW)
+    if (pre_gui_mask && window_timer_start()) {
+        fputs("pbboot: cannot start coordinator timeout timer\n",stderr);return 3;
+    }
+#endif
     if (pre_gui_mask && pthread_sigmask(SIG_SETMASK,pre_gui_mask,NULL)) {
         fputs("pbboot: cannot restore coordinator signal mask\n",stderr);return 3;
     }
@@ -1342,6 +1471,7 @@ static int window_run_boot(void *options,const sigset_t *pre_gui_mask)
 {
     const int result=run_boot(options,pre_gui_mask);
     atomic_store_explicit(&window_ready,0,memory_order_seq_cst);
+    window_timer_finish();
     return result;
 }
 #endif

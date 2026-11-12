@@ -22,16 +22,19 @@ def main():
         print(result.stdout, end='')
         if result.returncode:
             raise RuntimeError('actual window boot scope failed: ' + result.stderr)
-        if 'Darwin actual window boot: 2 cases, 0 failures' not in result.stdout:
+        if 'Darwin actual window boot: 3 cases, 0 failures' not in result.stdout:
             raise RuntimeError('actual window boot scope is incomplete')
         status = json.loads(Path(str(prefix) + '-23.json').read_text())
         if status['phase'] != 'eboot' or status['outcome'] != 'runtime stop' or status['imports_called'] != 0:
             raise RuntimeError('actual pending-close report has wrong phase/outcome/import effects')
         if status['runtime_stop'] != {'function': 'owned GUI close', 'reason': 'complete close payload'}:
             raise RuntimeError('actual pending-close report lost its complete first payload')
-        if Path(str(prefix) + '-24.json').exists():
-            raise RuntimeError('real qualification failure incorrectly produced a normal report')
-        print('Owned actual run_boot: pending Results and genuine failed-qualification gate passed')
+        for number in (24, 32):
+            if Path(str(prefix) + f'-{number}.json').exists():
+                raise RuntimeError('real qualification failure incorrectly produced a normal report')
+        if result.stdout.count('Darwin actual window boot qualifier timeout: return3, no report') != 1:
+            raise RuntimeError('actual owner-timer qualification failure is missing')
+        print('Owned actual run_boot: pending Results and genuine fault/timeout qualification gates passed')
 
 
 if __name__ == '__main__':
