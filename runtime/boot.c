@@ -54,6 +54,9 @@
 #include "runtime/input_host.h"
 #include "runtime/renderer.h"
 #include "runtime/syslib.h"
+#if defined(PB_METAL_WINDOW)
+#include "runtime/window_boot.h"
+#endif
 
 #if defined(__APPLE__) && defined(__MACH__)
 #if !defined(__x86_64__)
@@ -170,6 +173,11 @@ static volatile int fault_signal;
 static volatile int exit_code;
 /* An implemented system function that stopped the run (rt_fatal): its name and the reason. */
 static char runtime_stop_function[128], runtime_stop_reason[256];
+#if defined(PB_METAL_WINDOW)
+static atomic_int window_ready, window_pending_close;
+static atomic_flag window_request_seen=ATOMIC_FLAG_INIT;
+static char window_stop_function[128],window_stop_reason[256];
+#endif
 
 /* Claims the run's one stop; false when another thread stopped first. */
 static int claim_stop(void)
@@ -177,6 +185,28 @@ static int claim_stop(void)
     int expected = 0;
     return atomic_compare_exchange_strong(&stopped, &expected, 1);
 }
+
+#if defined(PB_METAL_WINDOW)
+static void publish_window_stop(void)
+{
+    if (!claim_stop()) return;
+    memcpy(runtime_stop_function,window_stop_function,sizeof runtime_stop_function);
+    memcpy(runtime_stop_reason,window_stop_reason,sizeof runtime_stop_reason);
+    outcome=RUNTIME_STOP;
+    atomic_store_explicit(&stopped,2,memory_order_release);
+    (void)pthread_kill(main_thread,SIGUSR1);
+}
+void rt_boot_window_request_stop(const char *function,const char *reason)
+{
+    if (atomic_flag_test_and_set_explicit(&window_request_seen,memory_order_seq_cst)) return;
+    snprintf(window_stop_function,sizeof window_stop_function,"%s",function ? function : "window");
+    snprintf(window_stop_reason,sizeof window_stop_reason,"%s",reason ? reason : "window stop requested");
+    /* Store-before-load pairs with the coordinator's ready-store/pending-load. No signal
+       or stop publication may interrupt the trusted TCB qualification. */
+    atomic_store_explicit(&window_pending_close,1,memory_order_seq_cst);
+    if (atomic_load_explicit(&window_ready,memory_order_seq_cst)) publish_window_stop();
+}
+#endif
 
 /* After a stop is recorded: unwind on the main thread; on another guest thread, wake the main one
    to make the report and wait for the process to end there. */
@@ -260,6 +290,9 @@ static void guest_exit(int code)
    not with fflush(NULL), which would lock every open stream, including any a parked thread holds. */
 static _Noreturn void end_after_report(int code)
 {
+#if defined(PB_METAL_WINDOW)
+    atomic_store_explicit(&window_ready,0,memory_order_seq_cst);
+#endif
     fflush(stdout);
     fflush(stderr);
     _exit(code);
@@ -885,140 +918,20 @@ static void *qualify_main_pointer(void *tcb)
 }
 #endif
 
-int main(int argc, char **argv)
+typedef struct {
+    const char *nid_path,*status_path,*game_library_path;
+    int timeout,trace,list;
+} boot_options;
+
+/* The coordinator owns loading, recovery, guest TLS, entry calls and the report together. */
+static int run_boot(boot_options *options,const sigset_t *pre_gui_mask)
 {
-    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL, *game_library_path = NULL,
-               *input_script = NULL;
-    int timeout = 30, trace = 0, list = 0;
-    rt_display_mode display_mode = RT_DISPLAY_NONE;
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--nids") && i + 1 < argc) nid_path = argv[++i];
-        else if (!strcmp(argv[i], "--status") && i + 1 < argc) status_path = argv[++i];
-        else if (!strcmp(argv[i], "--game-lib") && i + 1 < argc && !game_library_path) game_library_path = argv[++i];
-        else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--module") && i + 1 < argc && object_count && object_count < MAX_OBJECTS)
-            objects[object_count++].path = argv[++i];
-        else if (!strcmp(argv[i], "--stub-module") && i + 1 < argc) {
-            if (add_stub_module(argv[++i])) {
-                fprintf(stderr, "pbboot: --stub-module %s: want a new ID:NAME, the id 16 bits\n", argv[i]);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--app0") && i + 1 < argc)
-            rt_process.app0_dir = argv[++i];
-        else if (!strcmp(argv[i], "--data") && i + 1 < argc)
-            rt_process.data_dir = argv[++i];
-        else if (!strcmp(argv[i], "--savedata") && i + 1 < argc)
-            rt_process.savedata_dir = argv[++i];
-        else if (!strcmp(argv[i], "--display") && i + 1 < argc) {
-            const char *mode = argv[++i];
-            if (display_mode_named(mode, &display_mode)) {
-                fprintf(stderr, "pbboot: --display %s: want none, headless or window\n", mode);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--display-capture") && i + 1 < argc)
-            display_capture = argv[++i];
-        else if (!strcmp(argv[i], "--audio") && i + 1 < argc) {
-            const char *audio = argv[++i];
-            if (strcmp(audio, "none") && strcmp(audio, "host")) {
-                fprintf(stderr, "pbboot: --audio %s: want none or host\n", audio);
-                return 2;
-            }
-            if (rt_audio_host_configure(!strcmp(audio, "host"))) {
-                fprintf(stderr, "pbboot: --audio host: this build has no host sound (SDL3 was not found)\n");
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--input") && i + 1 < argc) {
-            const char *input = argv[++i];
-            if (strcmp(input, "none") && strcmp(input, "host")) {
-                fprintf(stderr, "pbboot: --input %s: want none or host\n", input);
-                return 2;
-            }
-            if (rt_input_host_configure(!strcmp(input, "host"))) {
-                fprintf(stderr, "pbboot: --input host: this build has no host input (SDL3 was not found)\n");
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--input-script") && i + 1 < argc && !input_script) input_script = argv[++i];
-        else if (!strcmp(argv[i], "--keyboard-text") && i + 1 < argc) {
-            /* What the on-screen keyboard answers (runtime/ime_dialog.h): typed, then Done. */
-            char why[128];
-            if (rt_ime_dialog_configure_text(argv[++i], why, sizeof why)) {
-                fprintf(stderr, "pbboot: --keyboard-text: %s\n", why);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
-            if (add_system_param(argv[++i])) {
-                fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--addcont") && i + 1 < argc) {
-            const char *label = argv[++i];
-            if (rt_process.addcont_count == RT_MAX_ADDCONTS || !label[0] || strlen(label) >= RT_ADDCONT_LABEL_BYTES) {
-                fprintf(stderr, "pbboot: --addcont %s: want an entitlement label of 1 to 16 characters (at most %d)\n", label,
-                        RT_MAX_ADDCONTS);
-                return 2;
-            }
-            memcpy(rt_process.addconts[rt_process.addcont_count++], label, strlen(label) + 1);
-        }
-        else if (!strcmp(argv[i], "--app-param") && i + 1 < argc) {
-            if (add_app_param(argv[++i])) {
-                fprintf(stderr, "pbboot: --app-param %s: want a new ID=VALUE, ID=unread or boot=unread\n", argv[i]);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--module-hook") && i + 1 < argc) {
-            const int added = add_module_hook(argv[++i]);
-            if (added == -2) {
-                fprintf(stderr, "pbboot: --module-hook %s: more than %d module hooks\n", argv[i], MAX_MODULE_HOOKS);
-                return 2;
-            }
-            if (added) {
-                fprintf(stderr,
-                        "pbboot: --module-hook %s: want MODULE:OFFSET:SIZE:BYTES:ACTION:NAME, BYTES 5 to 16 "
-                        "lowercase hex bytes and no more than SIZE, ACTION return or stop\n", argv[i]);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--trace")) trace = 1;
-        else if (!strcmp(argv[i], "--imports")) list = 1;
-        else if (argv[i][0] != '-' && !object_count) objects[object_count++].path = argv[i];
-        else {
-            fputs(usage, stderr);
-            return 2;
-        }
-    }
-    if (!object_count) {
-        fputs(usage, stderr);
-        return 2;
-    }
-    if (rt_input_host_enabled() && display_mode != RT_DISPLAY_WINDOW) {
-        /* The window's event loop is what reads the controller and the keyboard. */
-        fputs("pbboot: --input host needs --display window\n", stderr);
-        return 2;
-    }
-    if (input_script) {
-        /* A script plays the controller instead of the host's devices (runtime/input_host.h). */
-        char why[256];
-        if (rt_input_host_enabled()) {
-            fputs("pbboot: --input-script plays the controller: leave out --input host\n", stderr);
-            return 2;
-        }
-        if (rt_input_script_configure(input_script, why, sizeof why)) {
-            fprintf(stderr, "pbboot: --input-script: %s\n", why);
-            return 2;
-        }
-    }
-    if (display_capture && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
-    rt_renderer_configure(display_mode != RT_DISPLAY_NONE);
-    if (rt_display_configure(display_mode, display_capture)) {
-        fprintf(stderr, "pbboot: --display window: this build has no window (it needs Vulkan and SDL3)\n");
-        return 2;
-    }
+    const char *nid_path=options->nid_path,*status_path=options->status_path,*game_library_path=options->game_library_path;
+    const int timeout=options->timeout,trace=options->trace,list=options->list;
+#if !defined(__APPLE__) || !defined(__MACH__)
+    (void)pre_gui_mask;
+#endif
+    const char *phase = "eboot";
     char error[512];
     for (size_t k = 0; k < object_count; k++) {
         object *o = &objects[k];
@@ -1165,8 +1078,21 @@ int main(int argc, char **argv)
     rt_thread_register_main(stack, STACK_SIZE);
 #if defined(__APPLE__) && defined(__MACH__)
     if (install_boot_signals()) {fprintf(stderr,"pbboot: cannot install guest recovery: %s\n",strerror(errno));return 3;}
+    if (pre_gui_mask && pthread_sigmask(SIG_SETMASK,pre_gui_mask,NULL)) {
+        fputs("pbboot: cannot restore coordinator signal mask\n",stderr);return 3;
+    }
     run_guest((void *)qualify_main_pointer,tp,NULL,NULL,stack+STACK_SIZE-64,timeout);
     if (outcome!=RETURNED) {fputs("pbboot: main TCB qualification failed before guest entry\n",stderr);return 3;}
+#if defined(PB_METAL_WINDOW)
+    if (pre_gui_mask) {
+        atomic_store_explicit(&window_ready,1,memory_order_seq_cst);
+        if (atomic_load_explicit(&window_pending_close,memory_order_seq_cst)) {
+            publish_window_stop();
+            while (atomic_load_explicit(&stopped,memory_order_acquire)==1) sched_yield();
+            goto boot_results;
+        }
+    }
+#endif
     const uint32_t gs_offset=rt_guest_pointer_offset();
     for (size_t k=0;k<object_count;++k) {
         object *o=&objects[k];size_t changed=0;
@@ -1218,7 +1144,6 @@ int main(int argc, char **argv)
     unsigned char *stack_top = stack + STACK_SIZE - 64;
     /* Modules first, in the order given: entry(argument size 0, no arguments, no start override)
        runs the module's constructors and then its start function. */
-    const char *phase = "eboot";
     for (size_t k = 1; k < object_count; k++) {
         phase = objects[k].label;
         run_guest(objects[k].image + rt_elf_entry(objects[k].elf), NULL, NULL, NULL, stack_top, timeout);
@@ -1238,6 +1163,10 @@ int main(int argc, char **argv)
         run_guest(objects[0].image + rt_elf_entry(objects[0].elf), &params, (void *)guest_exit, NULL, stack_top, timeout);
     }
 
+#if defined(PB_METAL_WINDOW)
+boot_results:
+    atomic_store_explicit(&window_ready,0,memory_order_seq_cst);
+#endif
     /* Results */
     size_t called_total = 0;
     for (size_t k = 0; k < object_count; k++)
@@ -1406,4 +1335,154 @@ int main(int argc, char **argv)
         fclose(f);
     }
     end_after_report(0);
+}
+
+#if defined(PB_METAL_WINDOW)
+static int window_run_boot(void *options,const sigset_t *pre_gui_mask)
+{
+    const int result=run_boot(options,pre_gui_mask);
+    atomic_store_explicit(&window_ready,0,memory_order_seq_cst);
+    return result;
+}
+#endif
+
+int main(int argc, char **argv)
+{
+    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL, *game_library_path = NULL,
+               *input_script = NULL;
+    int timeout = 30, trace = 0, list = 0;
+    rt_display_mode display_mode = RT_DISPLAY_NONE;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--nids") && i + 1 < argc) nid_path = argv[++i];
+        else if (!strcmp(argv[i], "--status") && i + 1 < argc) status_path = argv[++i];
+        else if (!strcmp(argv[i], "--game-lib") && i + 1 < argc && !game_library_path) game_library_path = argv[++i];
+        else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--module") && i + 1 < argc && object_count && object_count < MAX_OBJECTS)
+            objects[object_count++].path = argv[++i];
+        else if (!strcmp(argv[i], "--stub-module") && i + 1 < argc) {
+            if (add_stub_module(argv[++i])) {
+                fprintf(stderr, "pbboot: --stub-module %s: want a new ID:NAME, the id 16 bits\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--app0") && i + 1 < argc)
+            rt_process.app0_dir = argv[++i];
+        else if (!strcmp(argv[i], "--data") && i + 1 < argc)
+            rt_process.data_dir = argv[++i];
+        else if (!strcmp(argv[i], "--savedata") && i + 1 < argc)
+            rt_process.savedata_dir = argv[++i];
+        else if (!strcmp(argv[i], "--display") && i + 1 < argc) {
+            const char *mode = argv[++i];
+            if (display_mode_named(mode, &display_mode)) {
+                fprintf(stderr, "pbboot: --display %s: want none, headless or window\n", mode);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--display-capture") && i + 1 < argc)
+            display_capture = argv[++i];
+        else if (!strcmp(argv[i], "--audio") && i + 1 < argc) {
+            const char *audio = argv[++i];
+            if (strcmp(audio, "none") && strcmp(audio, "host")) {
+                fprintf(stderr, "pbboot: --audio %s: want none or host\n", audio);
+                return 2;
+            }
+            if (rt_audio_host_configure(!strcmp(audio, "host"))) {
+                fprintf(stderr, "pbboot: --audio host: this build has no host sound (SDL3 was not found)\n");
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--input") && i + 1 < argc) {
+            const char *input = argv[++i];
+            if (strcmp(input, "none") && strcmp(input, "host")) {
+                fprintf(stderr, "pbboot: --input %s: want none or host\n", input);
+                return 2;
+            }
+            if (rt_input_host_configure(!strcmp(input, "host"))) {
+                fprintf(stderr, "pbboot: --input host: this build has no host input (SDL3 was not found)\n");
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--input-script") && i + 1 < argc && !input_script) input_script = argv[++i];
+        else if (!strcmp(argv[i], "--keyboard-text") && i + 1 < argc) {
+            /* What the on-screen keyboard answers (runtime/ime_dialog.h): typed, then Done. */
+            char why[128];
+            if (rt_ime_dialog_configure_text(argv[++i], why, sizeof why)) {
+                fprintf(stderr, "pbboot: --keyboard-text: %s\n", why);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
+            if (add_system_param(argv[++i])) {
+                fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--addcont") && i + 1 < argc) {
+            const char *label = argv[++i];
+            if (rt_process.addcont_count == RT_MAX_ADDCONTS || !label[0] || strlen(label) >= RT_ADDCONT_LABEL_BYTES) {
+                fprintf(stderr, "pbboot: --addcont %s: want an entitlement label of 1 to 16 characters (at most %d)\n", label,
+                        RT_MAX_ADDCONTS);
+                return 2;
+            }
+            memcpy(rt_process.addconts[rt_process.addcont_count++], label, strlen(label) + 1);
+        }
+        else if (!strcmp(argv[i], "--app-param") && i + 1 < argc) {
+            if (add_app_param(argv[++i])) {
+                fprintf(stderr, "pbboot: --app-param %s: want a new ID=VALUE, ID=unread or boot=unread\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--module-hook") && i + 1 < argc) {
+            const int added = add_module_hook(argv[++i]);
+            if (added == -2) {
+                fprintf(stderr, "pbboot: --module-hook %s: more than %d module hooks\n", argv[i], MAX_MODULE_HOOKS);
+                return 2;
+            }
+            if (added) {
+                fprintf(stderr,
+                        "pbboot: --module-hook %s: want MODULE:OFFSET:SIZE:BYTES:ACTION:NAME, BYTES 5 to 16 "
+                        "lowercase hex bytes and no more than SIZE, ACTION return or stop\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--trace")) trace = 1;
+        else if (!strcmp(argv[i], "--imports")) list = 1;
+        else if (argv[i][0] != '-' && !object_count) objects[object_count++].path = argv[i];
+        else {
+            fputs(usage, stderr);
+            return 2;
+        }
+    }
+    if (!object_count) {
+        fputs(usage, stderr);
+        return 2;
+    }
+    if (rt_input_host_enabled() && display_mode != RT_DISPLAY_WINDOW) {
+        /* The window's event loop is what reads the controller and the keyboard. */
+        fputs("pbboot: --input host needs --display window\n", stderr);
+        return 2;
+    }
+    if (input_script) {
+        /* A script plays the controller instead of the host's devices (runtime/input_host.h). */
+        char why[256];
+        if (rt_input_host_enabled()) {
+            fputs("pbboot: --input-script plays the controller: leave out --input host\n", stderr);
+            return 2;
+        }
+        if (rt_input_script_configure(input_script, why, sizeof why)) {
+            fprintf(stderr, "pbboot: --input-script: %s\n", why);
+            return 2;
+        }
+    }
+    if (display_capture && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
+    rt_renderer_configure(display_mode != RT_DISPLAY_NONE);
+    if (rt_display_configure(display_mode, display_capture)) {
+        fprintf(stderr, "pbboot: --display window: this build has no window backend (enable Metal on macOS or Vulkan with SDL3)\n");
+        return 2;
+    }
+    boot_options options={nid_path,status_path,game_library_path,timeout,trace,list};
+#if defined(PB_METAL_WINDOW)
+    if (display_mode==RT_DISPLAY_WINDOW && !list) return rt_display_window_run(window_run_boot,&options);
+#endif
+    return run_boot(&options,NULL);
 }

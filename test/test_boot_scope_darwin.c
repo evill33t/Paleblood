@@ -12,12 +12,31 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <time.h>
+#if defined(PB_TEST_METAL_WINDOW) && !defined(PB_METAL_WINDOW)
+#error Window scope must compile the actual PB_METAL_WINDOW production code.
+#endif
 static unsigned controlled_alarm(unsigned seconds);
 static uint64_t controlled_boot_call(void *,void *,void *,void *,void *);
 static _Noreturn void controlled_longjmp(sigjmp_buf,int);
+static _Noreturn void observed_report_exit(int);
+#define _exit(code) observed_report_exit(code)
 static int controlled_yield(void);
 static void before_compare(const void *);
 static int controlled_kill(pthread_t,int);
+static int controlled_sigaction(int,const struct sigaction *,struct sigaction *);
+#define sigaction(...) controlled_sigaction(__VA_ARGS__)
+static void before_window_load(const void *);
+static void before_window_store(const void *,int);
+#if defined(PB_TEST_METAL_WINDOW)
+static uint64_t controlled_window_call(void);
+#endif
+#undef atomic_store_explicit
+#define atomic_store_explicit(object,value,order) \
+    (before_window_store(object,(int)(value)),__c11_atomic_store(object,value,order))
+#undef atomic_load_explicit
+#define atomic_load_explicit(object,order) \
+    (before_window_load(object),__c11_atomic_load(object,order))
 #undef atomic_compare_exchange_strong
 #define atomic_compare_exchange_strong(object,expected,desired) \
     (before_compare(object),__c11_atomic_compare_exchange_strong(object,expected,desired,__ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST))
@@ -29,22 +48,52 @@ static int controlled_kill(pthread_t,int);
 #define main included_boot_main
 #include "../runtime/boot.c"
 #undef main
+#undef _exit
 #undef pthread_kill
+#undef sigaction
 #undef sched_yield
 #undef siglongjmp
 #undef rt_boot_call
 #undef alarm
 #undef atomic_compare_exchange_strong
+#undef atomic_load_explicit
+#define atomic_load_explicit(object,order) __c11_atomic_load(object,order)
+#undef atomic_store_explicit
+#define atomic_store_explicit(object,value,order) __c11_atomic_store(object,value,order)
 
 static int mode;
 static unsigned entries,arms,injected;
 static atomic_int worker_gate,notifications,wrong_thread_returned;
 static unsigned checks;
+#if defined(PB_TEST_METAL_WINDOW)
+#include "../runtime/display/window_mailbox.h"
+enum { WINDOW_EARLY=8, WINDOW_QUALIFY, WINDOW_READY_RACE, WINDOW_BETWEEN, WINDOW_ACTIVE,
+       WINDOW_RETURN, WINDOW_FAULT, WINDOW_ALARM, WINDOW_WORKER, WINDOW_OPEN_CLOSE,
+       WINDOW_OPEN_ALARM, WINDOW_BEATS_RETURN, WINDOW_QUALIFY_FAULT, WINDOW_BEATS_WORKER, WINDOW_GUI_PAYLOAD, WINDOW_REAL_PENDING, WINDOW_REAL_QUALIFY_FAULT };
+static atomic_int window_stage,gui_gate,qualifying,gui_at_ready_load,owner_consumed,window_worker_release,window_worker_attempted,gui_in_publish,owner_waiting_payload;
+static atomic_uint window_checks,owner_jumps,owner_alarms,owner_notifications;
+static void (*observed_signal_handler)(int,siginfo_t *,void *);
+static sigset_t pre_gui_mask;
+static rt_window_mailbox *scope_mailbox;
+#define WCHECK(value) do {atomic_fetch_add(&window_checks,1);if (!(value)) {fprintf(stderr,"window scope%d line%d: %s\n",mode,__LINE__,#value);_exit(1);}} while(0)
+static void bounded_wait(atomic_int *value,int target)
+{
+    struct timespec start,now;WCHECK(clock_gettime(CLOCK_MONOTONIC,&start)==0);
+    while (atomic_load_explicit(value,memory_order_acquire)<target) {
+        WCHECK(clock_gettime(CLOCK_MONOTONIC,&now)==0);
+        if (now.tv_sec-start.tv_sec>=4) {fprintf(stderr,"window scope%d bounded handshake expired\n",mode);_exit(1);}
+        sched_yield();
+    }
+}
+#endif
 #define CHECK(value) do {++checks;if (!(value)) {fprintf(stderr,"scope %d check %d: %s\n",mode,__LINE__,#value);_exit(1);}} while (0)
 static _Noreturn void controlled_longjmp(sigjmp_buf target,int value)
 {
     /* Catch a wrong-thread jump before executing undefined cross-thread stack recovery. */
     if (!pthread_equal(pthread_self(),main_thread)) _exit(87);
+#if defined(PB_TEST_METAL_WINDOW)
+    if (mode>=WINDOW_EARLY) atomic_fetch_add(&owner_jumps,1);
+#endif
     siglongjmp(target,value);
 }
 static int controlled_kill(pthread_t thread,int sig)
@@ -52,6 +101,27 @@ static int controlled_kill(pthread_t thread,int sig)
     const int result=pthread_kill(thread,sig);
     if (!result) atomic_fetch_add(&notifications,1);
     return result;
+}
+#if defined(PB_TEST_METAL_WINDOW)
+static void observe_window_signal(int sig,siginfo_t *info,void *context)
+{
+    if (!pthread_equal(pthread_self(),main_thread)) _exit(88);
+    if (sig==SIGALRM) atomic_fetch_add(&owner_alarms,1);
+    if (sig==SIGUSR1) atomic_fetch_add(&owner_notifications,1);
+    observed_signal_handler(sig,info,context); /* Forward to the actual installed production handler. */
+}
+#endif
+static int controlled_sigaction(int sig,const struct sigaction *action,struct sigaction *previous)
+{
+#if defined(PB_TEST_METAL_WINDOW)
+    if (mode>=WINDOW_EARLY && action) {
+        WCHECK(action->sa_sigaction==on_signal && (action->sa_flags&SA_SIGINFO));
+        struct sigaction observed=*action;
+        observed_signal_handler=action->sa_sigaction;observed.sa_sigaction=observe_window_signal;
+        return sigaction(sig,&observed,previous);
+    }
+#endif
+    return sigaction(sig,action,previous);
 }
 static void *worker(void *unused)
 {
@@ -70,6 +140,9 @@ static void *worker(void *unused)
         strcpy(runtime_stop_function,"owned scope worker");strcpy(runtime_stop_reason,"complete payload");
         outcome=RUNTIME_STOP;unwind();
     }
+#if defined(PB_TEST_METAL_WINDOW)
+    if (mode==WINDOW_BEATS_WORKER) bounded_wait(&window_worker_release,1);
+#endif
     runtime_stopped("owned scope worker","complete payload");
     return NULL;
 }
@@ -87,20 +160,69 @@ static void before_compare(const void *address)
         start_worker();
         while (atomic_load_explicit(&stopped,memory_order_acquire)!=1) sched_yield();
     }
+#if defined(PB_TEST_METAL_WINDOW)
+    if (mode==WINDOW_BEATS_RETURN && address==(const void *)&stopped && pthread_equal(pthread_self(),main_thread)) {
+        atomic_store(&window_stage,8);bounded_wait(&gui_gate,1);
+    }
+    if (mode==WINDOW_BEATS_WORKER && address==(const void *)&stopped && !pthread_equal(pthread_self(),main_thread))
+        atomic_store(&window_worker_attempted,1);
+#endif
+
+}
+static void before_window_load(const void *address)
+{
+#if defined(PB_TEST_METAL_WINDOW)
+    if (mode==WINDOW_READY_RACE && address==(const void *)&window_ready &&
+        !pthread_equal(pthread_self(),main_thread)) {
+        /* Exact lost-close boundary: pending was stored; the GUI ready-load has not run. */
+        WCHECK(atomic_load(&window_pending_close)==1 && !atomic_load(&window_ready) && !atomic_load(&stopped));
+        atomic_store(&gui_at_ready_load,1);bounded_wait(&owner_consumed,1);
+    }
+#else
+    (void)address;
+#endif
+}
+
+static void before_window_store(const void *address,int value)
+{
+#if defined(PB_TEST_METAL_WINDOW)
+    if (mode==WINDOW_GUI_PAYLOAD && address==(const void *)&stopped && value==2 && !pthread_equal(pthread_self(),main_thread)) {
+        WCHECK(outcome==RUNTIME_STOP && !memcmp(runtime_stop_function,window_stop_function,sizeof "owned GUI close"));
+        WCHECK(!memcmp(runtime_stop_reason,window_stop_reason,sizeof "complete close payload"));
+        atomic_store(&gui_in_publish,1);bounded_wait(&owner_waiting_payload,1);
+    }
+#else
+    (void)address;(void)value;
+#endif
 }
 static int controlled_yield(void)
 {
+#if defined(PB_TEST_METAL_WINDOW)
+    if (mode==WINDOW_GUI_PAYLOAD && pthread_equal(pthread_self(),main_thread)) atomic_store(&owner_waiting_payload,1);
+#endif
     if (mode==7 && pthread_equal(pthread_self(),main_thread)) atomic_store(&worker_gate,2);
     return sched_yield();
 }
 static unsigned controlled_alarm(unsigned seconds)
 {
+#if defined(PB_TEST_METAL_WINDOW)
+    if (mode>=WINDOW_EARLY) {if (seconds) ++arms;return alarm(seconds);}
+#endif
     if (seconds) ++arms;
     else if (mode==3 && !injected) {CHECK(raise(SIGALRM)==0);++injected;}
     return 0;
 }
 static uint64_t controlled_boot_call(void *fn,void *arg,void *stack,void *b,void *c)
 {
+#if defined(PB_TEST_METAL_WINDOW)
+    if (mode==WINDOW_REAL_PENDING || mode==WINDOW_REAL_QUALIFY_FAULT) {
+        ++entries;WCHECK(pthread_equal(pthread_self(),main_thread) && fn==(void *)qualify_main_pointer);
+        WCHECK(!atomic_load(&window_ready) && !atomic_load(&stopped) && !atomic_load(&notifications));
+        if (mode==WINDOW_REAL_QUALIFY_FAULT) WCHECK(raise(SIGILL)==0);
+        WCHECK(qualify_main_pointer(arg)==arg);return 7;
+    }
+    if (mode>=WINDOW_EARLY) return controlled_window_call();
+#endif
     (void)fn;(void)arg;(void)stack;(void)b;(void)c;++entries;
     CHECK(pthread_equal(pthread_self(),main_thread));
     if (mode==5 || mode==6) {
@@ -142,8 +264,208 @@ static void exercise(void)
     CHECK(sigismember(&mask,SIGUSR2)==1 && sigismember(&mask,SIGALRM)==0 && sigismember(&mask,SIGUSR1)==0);
     printf("Darwin boot scope case %d: %u checks passed\n",mode,checks);fflush(stdout);_exit(0);
 }
+
+#if defined(PB_TEST_METAL_WINDOW)
+static uint64_t controlled_window_call(void)
+{
+    ++entries;WCHECK(pthread_equal(pthread_self(),main_thread));
+    if (atomic_load(&qualifying)) {
+        WCHECK(!atomic_load(&window_ready) && !atomic_load(&stopped) && !atomic_load(&notifications));
+        if (mode==WINDOW_QUALIFY) {
+            atomic_store(&window_stage,1);bounded_wait(&gui_gate,1);
+            WCHECK(atomic_load(&window_pending_close) && !atomic_load(&stopped) && !atomic_load(&notifications));
+        }
+        if (mode==WINDOW_QUALIFY_FAULT) WCHECK(raise(SIGILL)==0);
+        return 7;
+    }
+    if (mode==WINDOW_WORKER || mode==WINDOW_BEATS_WORKER) start_worker();
+    atomic_store(&window_stage,1);
+    if (mode==WINDOW_FAULT) WCHECK(raise(SIGILL)==0);
+    if (mode==WINDOW_RETURN || mode==WINDOW_BEATS_RETURN) return 7;
+    if (mode==WINDOW_OPEN_CLOSE || mode==WINDOW_OPEN_ALARM) {
+        (void)rt_window_mailbox_open(scope_mailbox,7,1);
+        WCHECK(0); /* Recovery must interrupt a released wait, not finish by open timeout. */
+    }
+    for (;;) pause();
+}
+static void *window_coordinator(void *unused)
+{
+    (void)unused;sigset_t inherited,after;
+    WCHECK(pthread_sigmask(SIG_SETMASK,NULL,&inherited)==0);
+    WCHECK(sigismember(&inherited,SIGALRM)==1 && sigismember(&inherited,SIGUSR1)==1 && sigismember(&inherited,SIGUSR2)==1);
+    WCHECK(install_boot_signals()==0 && pthread_equal(pthread_self(),main_thread));
+    WCHECK(pthread_sigmask(SIG_SETMASK,&pre_gui_mask,NULL)==0);
+    atomic_store(&qualifying,1);run_guest(NULL,NULL,NULL,NULL,NULL,3);atomic_store(&qualifying,0);
+    if (mode==WINDOW_QUALIFY_FAULT) {
+        WCHECK(outcome==FAULT && fault_signal==SIGILL && !atomic_load(&window_ready));
+    } else {
+        WCHECK(outcome==RETURNED && !atomic_load(&stopped));
+        if (mode==WINDOW_READY_RACE) {atomic_store(&window_stage,1);bounded_wait(&gui_at_ready_load,1);}
+        atomic_store_explicit(&window_ready,1,memory_order_seq_cst);
+        if (atomic_load_explicit(&window_pending_close,memory_order_seq_cst)) {
+            publish_window_stop();
+            while (atomic_load_explicit(&stopped,memory_order_acquire)==1) sched_yield();
+        }
+        if (mode==WINDOW_READY_RACE) atomic_store(&owner_consumed,1);
+        if (mode==WINDOW_BETWEEN) {atomic_store(&window_stage,1);bounded_wait(&gui_gate,1);}
+        if (mode==WINDOW_GUI_PAYLOAD) {atomic_store(&window_stage,1);bounded_wait(&gui_in_publish,1);}
+        terminal_call=(mode==WINDOW_RETURN || mode==WINDOW_BEATS_RETURN);
+        run_guest(NULL,NULL,NULL,NULL,NULL,mode==WINDOW_ALARM || mode==WINDOW_OPEN_ALARM ?1:3);
+        if (mode<=WINDOW_BETWEEN || mode==WINDOW_GUI_PAYLOAD) WCHECK(entries==1); /* Qualification only; no guest entry. */
+        else WCHECK(entries==2);
+    }
+    WCHECK(!atomic_load(&recovery_active) && atomic_load_explicit(&stopped,memory_order_acquire)==2);
+    atomic_store(&window_stage,9);bounded_wait(&gui_gate,2);
+    if (mode==WINDOW_RETURN) WCHECK(outcome==RETURNED);
+    else if (mode==WINDOW_FAULT || mode==WINDOW_QUALIFY_FAULT) WCHECK(outcome==FAULT && fault_signal==SIGILL);
+    else if (mode==WINDOW_ALARM || mode==WINDOW_OPEN_ALARM) WCHECK(outcome==TIMEOUT && fault_signal==SIGALRM);
+    else if (mode==WINDOW_WORKER) {
+        WCHECK(outcome==RUNTIME_STOP && !strcmp(runtime_stop_function,"owned scope worker") && !strcmp(runtime_stop_reason,"complete payload"));
+    } else {
+        WCHECK(outcome==RUNTIME_STOP && !strcmp(runtime_stop_function,"owned GUI close") && !strcmp(runtime_stop_reason,"complete close payload"));
+        WCHECK(!memcmp(runtime_stop_function,window_stop_function,sizeof "owned GUI close"));
+        WCHECK(!memcmp(runtime_stop_reason,window_stop_reason,sizeof "complete close payload"));
+    }
+    WCHECK(pthread_sigmask(SIG_SETMASK,NULL,&after)==0);
+    for (unsigned sig=1;sig<sizeof(sigset_t)*8;++sig) WCHECK(sigismember(&after,sig)==sigismember(&pre_gui_mask,sig));
+    atomic_store_explicit(&window_ready,0,memory_order_seq_cst);
+    atomic_store(&window_stage,10);return NULL;
+}
+static void exercise_window(void)
+{
+    sigset_t canary,owned,gui_mask;
+    WCHECK(sigemptyset(&canary)==0 && sigaddset(&canary,SIGUSR2)==0 && pthread_sigmask(SIG_BLOCK,&canary,NULL)==0);
+    WCHECK(pthread_sigmask(SIG_SETMASK,NULL,&pre_gui_mask)==0);
+    WCHECK(!sigismember(&pre_gui_mask,SIGALRM) && !sigismember(&pre_gui_mask,SIGUSR1));
+    WCHECK(sigemptyset(&owned)==0 && sigaddset(&owned,SIGALRM)==0 && sigaddset(&owned,SIGUSR1)==0);
+    WCHECK(pthread_sigmask(SIG_BLOCK,&owned,NULL)==0);
+    memset(runtime_stop_function,0xa5,sizeof runtime_stop_function);memset(runtime_stop_reason,0xa5,sizeof runtime_stop_reason);
+    if (mode==WINDOW_EARLY || mode==WINDOW_QUALIFY_FAULT) {
+        rt_boot_window_request_stop("owned GUI close","complete close payload");
+        rt_boot_window_request_stop("second callback","must not replace first pending payload");
+        WCHECK(atomic_load(&window_pending_close) && !atomic_load(&window_ready) && !atomic_load(&stopped) && !atomic_load(&notifications));
+    }
+    if (mode==WINDOW_OPEN_CLOSE || mode==WINDOW_OPEN_ALARM) {scope_mailbox=rt_window_mailbox_create();WCHECK(scope_mailbox!=NULL);}
+    pthread_t coordinator;WCHECK(pthread_create(&coordinator,NULL,window_coordinator,NULL)==0);
+    if (mode==WINDOW_EARLY || mode==WINDOW_QUALIFY_FAULT || mode==WINDOW_RETURN || mode==WINDOW_FAULT || mode==WINDOW_ALARM || mode==WINDOW_WORKER)
+        bounded_wait(&window_stage,9);
+    else if (mode==WINDOW_BEATS_RETURN) bounded_wait(&window_stage,8);
+    else bounded_wait(&window_stage,1);
+    if (mode==WINDOW_OPEN_CLOSE || mode==WINDOW_OPEN_ALARM) {
+        rt_window_frame frame={0};
+        while (!rt_window_mailbox_poll(scope_mailbox,&frame) || !frame.opening) sched_yield();
+        WCHECK(frame.open_width==7 && frame.open_height==1);
+        if (mode==WINDOW_OPEN_ALARM) bounded_wait(&window_stage,9);
+        if (mode==WINDOW_OPEN_ALARM) rt_window_mailbox_cancel(scope_mailbox);
+    }
+    rt_boot_window_request_stop("owned GUI close","complete close payload");
+    if (mode==WINDOW_OPEN_CLOSE) rt_window_mailbox_cancel(scope_mailbox);
+    if (mode==WINDOW_QUALIFY) WCHECK(!atomic_load(&window_ready) && !atomic_load(&stopped) && !atomic_load(&notifications));
+    if (mode==WINDOW_BEATS_WORKER) {atomic_store(&window_worker_release,1);bounded_wait(&window_worker_attempted,1);}
+    if (mode==WINDOW_QUALIFY || mode==WINDOW_BETWEEN || mode==WINDOW_BEATS_RETURN) atomic_store(&gui_gate,1);
+    bounded_wait(&window_stage,9);
+    rt_boot_window_request_stop("second callback","must not replace completed first result");
+    if (scope_mailbox) {
+        rt_window_frame frame={0};WCHECK(rt_window_mailbox_poll(scope_mailbox,&frame)==1);free(frame.rgba);
+        WCHECK(rt_window_mailbox_opened(scope_mailbox)==1); /* No abandoned mailbox lock. */
+    }
+    WCHECK(pthread_sigmask(SIG_SETMASK,NULL,&gui_mask)==0);
+    WCHECK(sigismember(&gui_mask,SIGALRM)==1 && sigismember(&gui_mask,SIGUSR1)==1 && sigismember(&gui_mask,SIGUSR2)==1);
+    atomic_store(&gui_gate,2);bounded_wait(&window_stage,10);
+    WCHECK(!atomic_load(&window_ready) && pthread_join(coordinator,NULL)==0);
+    if (mode==WINDOW_ALARM || mode==WINDOW_OPEN_ALARM || mode==WINDOW_FAULT || mode==WINDOW_QUALIFY_FAULT || mode==WINDOW_ACTIVE || mode==WINDOW_WORKER || mode==WINDOW_OPEN_CLOSE || mode==WINDOW_BEATS_WORKER)
+        WCHECK(atomic_load(&owner_jumps)==1);
+    else if (mode==WINDOW_RETURN || mode==WINDOW_BEATS_RETURN || mode==WINDOW_GUI_PAYLOAD) WCHECK(!atomic_load(&owner_jumps));
+    else WCHECK(atomic_load(&owner_jumps)<=1); /* A pending self-SIGUSR1 may reach the skipped frame. */
+    if (mode==WINDOW_RETURN || mode==WINDOW_FAULT || mode==WINDOW_ALARM || mode==WINDOW_OPEN_ALARM || mode==WINDOW_QUALIFY_FAULT)
+        WCHECK(!atomic_load(&notifications));
+    else {bounded_wait(&notifications,1);WCHECK(atomic_load(&notifications)==1);}
+    WCHECK(atomic_load(&owner_alarms)==(mode==WINDOW_ALARM || mode==WINDOW_OPEN_ALARM ?1u:0u));
+    WCHECK(atomic_load(&owner_notifications)==atomic_load(&notifications));
+    if (scope_mailbox) rt_window_mailbox_destroy(scope_mailbox);
+    printf("Darwin window protocol case%d: %u checks, %u owner jumps, %u notifications\n",mode,atomic_load(&window_checks),atomic_load(&owner_jumps),atomic_load(&notifications));
+    fflush(stdout);_exit(0);
+}
+static unsigned window_scopes(void)
+{
+    fflush(stdout); /* Do not duplicate the already printed legacy summary across fork. */
+    unsigned failed=0;
+    for (mode=WINDOW_EARLY;mode<=WINDOW_GUI_PAYLOAD;++mode) {
+        const pid_t child=fork();if (child<0) abort();
+        if (!child) exercise_window();
+        int status=0;
+        if (waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status)!=0) {
+            ++failed;fprintf(stderr,"Darwin window protocol case%d: child status=%d\n",mode,status);
+        }
+    }
+    printf("Darwin window protocol: 15 cases, %u failures\n",failed);return failed;
+}
+#endif
+
+
+static _Noreturn void observed_report_exit(int code)
+{
+#if defined(PB_TEST_METAL_WINDOW)
+    if (mode==WINDOW_REAL_PENDING) {
+        WCHECK(code==0 && pthread_equal(pthread_self(),main_thread));
+        WCHECK(!atomic_load(&window_ready) && !atomic_load(&recovery_active) && entries==1);
+        WCHECK(atomic_load(&stopped)==2 && outcome==RUNTIME_STOP);
+        WCHECK(!strcmp(runtime_stop_function,"owned GUI close") && !strcmp(runtime_stop_reason,"complete close payload"));
+        printf("Darwin actual window boot pending: report0, qualification1, guest_entries0\n");fflush(stdout);
+    } else if (mode==WINDOW_REAL_QUALIFY_FAULT) {
+        fputs("qualifier fault incorrectly reached report/_exit instead of returning3\n",stderr);_exit(91);
+    }
+#endif
+    _exit(code);
+}
+#if defined(PB_TEST_METAL_WINDOW)
+static void *real_window_boot_coordinator(void *unused)
+{
+    (void)unused;
+    const char *image=getenv("BB_SCOPE_WINDOW_REAL_BOOT"),*prefix=getenv("BB_SCOPE_WINDOW_STATUS");
+    WCHECK(image && prefix);object_count=1;objects[0].path=image;
+    char status[4096];const int length=snprintf(status,sizeof status,"%s-%d.json",prefix,mode);
+    WCHECK(length>0 && (size_t)length<sizeof status);
+    boot_options options={NULL,status,NULL,3,0,0};
+    const int result=window_run_boot(&options,&pre_gui_mask); /* Actual extracted body and callback. */
+    WCHECK(mode==WINDOW_REAL_QUALIFY_FAULT && result==3 && outcome==FAULT && fault_signal==SIGILL);
+    WCHECK(entries==1 && !atomic_load(&window_ready) && !atomic_load(&notifications) && atomic_load(&owner_jumps)==1);
+    atomic_store(&window_stage,10);return NULL;
+}
+static void exercise_real_window_boot(void)
+{
+    sigset_t owned,canary;
+    WCHECK(sigemptyset(&canary)==0 && sigaddset(&canary,SIGUSR2)==0 && pthread_sigmask(SIG_BLOCK,&canary,NULL)==0);
+    WCHECK(pthread_sigmask(SIG_SETMASK,NULL,&pre_gui_mask)==0);
+    WCHECK(sigemptyset(&owned)==0 && sigaddset(&owned,SIGALRM)==0 && sigaddset(&owned,SIGUSR1)==0);
+    WCHECK(pthread_sigmask(SIG_BLOCK,&owned,NULL)==0);
+    rt_boot_window_request_stop("owned GUI close","complete close payload");
+    WCHECK(atomic_load(&window_pending_close)==1 && !atomic_load(&stopped) && !atomic_load(&notifications));
+    pthread_t coordinator;WCHECK(pthread_create(&coordinator,NULL,real_window_boot_coordinator,NULL)==0);
+    bounded_wait(&window_stage,10); /* Pending success exits the child through actual report above. */
+    WCHECK(mode==WINDOW_REAL_QUALIFY_FAULT && pthread_join(coordinator,NULL)==0);
+    printf("Darwin actual window boot qualifier fault: return3, no report\n");fflush(stdout);_exit(0);
+}
+static unsigned real_window_boot_scopes(void)
+{
+    unsigned failures=0;
+    for (mode=WINDOW_REAL_PENDING;mode<=WINDOW_REAL_QUALIFY_FAULT;++mode) {
+        const pid_t child=fork();if (child<0) abort();
+        if (!child) exercise_real_window_boot();
+        int status=0;
+        if (waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status)!=0) {
+            ++failures;fprintf(stderr,"Darwin actual window boot case%d: child status=%d\n",mode,status);
+        }
+    }
+    printf("Darwin actual window boot: 2 cases, %u failures\n",failures);return failures;
+}
+#endif
+
 int main(void)
 {
+#if defined(PB_TEST_METAL_WINDOW)
+    if (getenv("BB_SCOPE_WINDOW_REAL_BOOT")) return real_window_boot_scopes()?1:0;
+#endif
     unsigned failures=0;
     for (mode=1;mode<=7;++mode) {
         const pid_t child=fork();if (child<0) abort();
@@ -153,5 +475,9 @@ int main(void)
             ++failures;fprintf(stderr,"Darwin scope case %d: child status=%d\n",mode,status);
         }
     }
-    printf("Darwin recovery scopes: 7 cases, %u failures\n",failures);return failures?1:0;
+    printf("Darwin recovery scopes: 7 cases, %u failures\n",failures);
+#if defined(PB_TEST_METAL_WINDOW)
+    failures+=window_scopes();
+#endif
+    return failures?1:0;
 }
