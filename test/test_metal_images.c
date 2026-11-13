@@ -248,7 +248,12 @@ int main(void)
         probe(x,pool,code,length,user,0xffff,NULL);float_results(pool,expected_mip,0.00001f);
         if(!arrayed){unsigned lod_slot=one_d?9:10;user[lod_slot]=1;probe(x,pool,code,length,user,0xffff,NULL);
             const float last_mip[4]={112.0f/255,66.0f/255,128.0f/255,1};float_results(pool,last_mip,0.00001f);
-            user[lod_slot]=2;probe(x,pool,code,length,user,0xffff,"shader runtime stop");
+            /* The RGBA view's out-of-range level reads a zero replacement texel. */
+            user[lod_slot]=2;probe(x,pool,code,length,user,0xffff,NULL);
+            const float outside_mip[4]={0,0,0,0};float_results(pool,outside_mip,0.00001f);
+            const uint32_t *outside_bits=(const uint32_t *)(pool+PROBE);
+            printf("Image LOD replacement: one_d=%d tile=%u %08x %08x %08x %08x\n",one_d,tiles[tile],
+                   outside_bits[0],outside_bits[1],outside_bits[2],outside_bits[3]);
             user[lod_slot]=0;probe(x,pool,code,length,user,0xffff,NULL);float_results(pool,expected_mip,0.00001f);
         }
     }
@@ -265,6 +270,13 @@ int main(void)
     }
     user[8]=0;user[10]=1u<<20|1u<<22;user[14]=user[15]=bits(0.5f);
     probe(x,pool,image_probe_sample,sizeof image_probe_sample,user,0xffff,NULL);const float blend[4]={0.5f,0.5f,0.5f,1};float_results(pool,blend,0.00001f);
+    /* Constant WQM needs no collective, while implicit sampling still needs its quad gradients. */
+    uint32_t wqm_sample[1 + sizeof image_probe_sample / sizeof image_probe_sample[0]];
+    wqm_sample[0] = 0xbefe0a7e; /* s_wqm_b64 exec, exec */
+    memcpy(wqm_sample + 1, image_probe_sample, sizeof image_probe_sample);
+    probe(x, pool, wqm_sample, sizeof wqm_sample, user, 0xffff, NULL); float_results(pool, blend, 0.00001f);
+    const uint32_t *wqm_result = (const uint32_t *)(pool + PROBE);
+    printf("WQM gradient sample: %08x %08x %08x %08x\n", wqm_result[0], wqm_result[1], wqm_result[2], wqm_result[3]);
     /* Invalid descriptors stop before native resource reads or allocation, and do not poison a later draw. */
     rt_executor_reset(x);probe(x,pool,image_probe_sample,sizeof image_probe_sample,user,0xf0ff,"reads unset user data");
     const uint32_t base_sampler=user[8],base_filter=user[10];

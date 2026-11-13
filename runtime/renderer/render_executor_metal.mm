@@ -37,7 +37,8 @@ enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_DIMENSION =
        MAX_IMAGES = 64, MAX_SAMPLERS = 64, USER_BYTES = GCN_USER_SGPR_MAX * 4, GCN_WAVE_LANES = 64, MAX_COMPUTE_GROUPS = 65535, THREAD_ID_XYZ = 2 };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1,
        PERSP_CENTER_ENA = 2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200, PIXEL_BARYCENTRIC_VGPRS = 2,
-       VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1 };
+       VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1,
+       DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
        CLIP_ENABLES = 0xff, CLIP_VECTOR_0 = 1 << 22, CLIP_VECTOR_1 = 1 << 23, PARAMETER_LIMIT = 32 };
 enum { SHADER_EARLY_Z_THEN_LATE_Z = 1u << 4, SHADER_KILL_ENABLE = 1u << 6 };
@@ -121,10 +122,18 @@ struct MetalState {
     bool depth_view_set = false, stencil_control_set = false, stencil_reference_set[2] = {};
     uint32_t scissor_tl = 0, scissor_br = 0;
     bool scissor_tl_set = false, scissor_br_set = false;
+    uint32_t clip_control = 0; /* PA_CL_CLIP_CNTL; 0 until set: every plane clips */
     uint32_t index_type = 0, index_size = 0;
     uint64_t index_base = 0;
     bool index_type_set = false, index_base_set = false, index_size_set = false;
     bool index_base_current = false;
+};
+/* What each queue of the GPU keeps of its own (rt_executor_select_queue): the compute shader and its user data. */
+struct MetalQueueState {
+    rt_compute_shader compute{};
+    bool compute_set = false;
+    uint32_t compute_user[GCN_USER_SGPR_MAX] = {};
+    uint32_t compute_user_set = 0;
 };
 struct rt_executor {
     id<MTLDevice> device = nil;
@@ -135,6 +144,9 @@ struct rt_executor {
     uint64_t size = 0, guest_base = 0, address_offset = 0;
     bool failed = false;
     MetalState state;
+    /* the compute state of the queues other than the one the calls come from: the running queue's is in state */
+    MetalQueueState queue_states[RT_EXECUTOR_QUEUES];
+    unsigned call_queue = RT_EXECUTOR_GRAPHICS_QUEUE;
     std::vector<MetalShader> shaders;
     std::vector<MetalComputePipeline> compute_pipelines;
     std::vector<MetalTarget> targets;
@@ -164,7 +176,12 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, DB_STENCILREFMASK = 0xa10c,
        DB_STENCILREFMASK_BF = 0xa10d, CB_BLEND0_CONTROL = 0xa1e0,
        DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
-       PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32 };
+       PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32,
+       PA_CL_CLIP_CNTL = 0xa204 };
+/* PA_CL_CLIP_CNTL (gfx_7_2_sh_mask.h): CLIP_DISABLE, DX_RASTERIZATION_KILL, ZCLIP_NEAR_DISABLE, ZCLIP_FAR_DISABLE. Where z
+   is not clipped the depth is clamped to the viewport's range: Metal's MTLDepthClipModeClamp, as the Vulkan executor's
+   depth clamp (render_executor.c). */
+enum { CLIP_DISABLE = 1u << 16, DX_RASTERIZATION_KILL = 1u << 22, ZCLIP_NEAR_DISABLE = 1u << 26, ZCLIP_FAR_DISABLE = 1u << 27 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENABLE = 4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000,
        ROP3_SHIFT = 16, ROP3_COPY = 0xcc, TARGET0_MASK = 15, DI_PT_TRILIST = 4, DI_PT_RECTLIST = 17 };
@@ -178,6 +195,7 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
     case VGT_PRIMITIVE_TYPE: state.primitive = value; state.primitive_set = true; return 0;
     case PA_SC_SCREEN_SCISSOR_TL: state.scissor_tl = value; state.scissor_tl_set = true; return 0;
     case PA_SC_SCREEN_SCISSOR_BR: state.scissor_br = value; state.scissor_br_set = true; return 0;
+    case PA_CL_CLIP_CNTL: state.clip_control = value; return 0;
     case DB_DEPTH_VIEW: state.depth_view = value; state.depth_view_set = true; return 0;
     case DB_RENDER_CONTROL: state.render_control = value; return 0;
     case DB_STENCIL_CONTROL: state.stencil_control = value; state.stencil_control_set = true; return 0;
@@ -204,6 +222,8 @@ static int check_state(const MetalState &state, char *error, size_t size)
 {
     if (state.primitive_set && state.primitive != DI_PT_TRILIST && state.primitive != DI_PT_RECTLIST)
         return failed(error, size, "primitive type %u: only triangle and rectangle lists are drawn yet", state.primitive);
+    if (state.clip_control & DX_RASTERIZATION_KILL)
+        return failed(error, size, "a draw with rasterization killed (PA_CL_CLIP_CNTL %#x): not drawn yet", state.clip_control);
     if (state.blend_set && (state.blend & BLEND_ENABLE)) return failed(error, size, "blending is not drawn yet");
     if (state.color_control_set) {
         const uint32_t mode = (state.color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT;
@@ -738,7 +758,8 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
             return failed(error,size,"sampled image format does not support linear filtering on this Metal device");
         out.images[i] = {images[i].origin,
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,0,0};
+            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,
+            descriptor.swizzle != DST_SEL_IDENTITY ? descriptor.swizzle : 0u, 0}; /* DST_SEL: for the texel a load outside the image reads */
         if (!(out.textures[i] = image_for(x,words,descriptor,*format,false,nullptr,nullptr,error,size))) return -1;
     }
     return 0;
@@ -1066,8 +1087,6 @@ static int shader_runtime_stop(rt_executor *x, char *error, size_t size)
             stop & 7, stop & 0x80 ? "store" : "load", stop >> 8 & 15, stop >> 4 & 7, stop & 8 ? ", nonidentity swizzle" : "");
     if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_VCC_UNKNOWN)
         return failed(error, size, "shader runtime stop: VCC lane mask is unknown after a scalar half write");
-    if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_IMAGE_RANGE)
-        return failed(error,size,"shader runtime stop: image access is outside its view");
     if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_WAVE_PC)
         return failed(error, size, "shader runtime stop: logical wave invocations disagree on the program counter");
     if (stop) return failed(error, size, "shader runtime stop with unknown code %#x", stop);
@@ -1426,6 +1445,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     [encoder setRenderPipelineState:pipeline]; [encoder setCullMode:MTLCullModeNone];
     [encoder setDepthStencilState:depth.state]; [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
     [encoder setStencilFrontReferenceValue:depth.reference[0] backReferenceValue:depth.reference[1]];
+    if (state.clip_control & (CLIP_DISABLE | ZCLIP_NEAR_DISABLE | ZCLIP_FAR_DISABLE)) [encoder setDepthClipMode:MTLDepthClipModeClamp];
     const double sy = std::fabs(state.scale[1]);
     const MTLViewport viewport = {state.translate[0] - state.scale[0], state.translate[1] - sy,
         2 * state.scale[0], 2 * sy, state.translate[2], state.translate[2] + state.scale[2]};
@@ -1510,7 +1530,25 @@ static int draw_indexed(rt_executor *x, MetalState &state, uint32_t header, uint
 /* Reset only GPU state: completed targets, compiled shaders and device failure remain. */
 extern "C" void rt_executor_reset(rt_executor *x)
 {
-    if (x) x->state = MetalState{};
+    if (!x) return;
+    x->state = MetalState{};
+    for (MetalQueueState &queue : x->queue_states) queue = MetalQueueState{};
+    x->call_queue = RT_EXECUTOR_GRAPHICS_QUEUE;
+}
+
+extern "C" int rt_executor_select_queue(rt_executor *x, unsigned queue, char *error, size_t error_size)
+{
+    if (!x || x->failed) return failed(error, error_size, "a usable executor is required");
+    if (queue >= RT_EXECUTOR_QUEUES) return failed(error, error_size, "calls from queue %u (queues 0-%d)", queue, RT_EXECUTOR_QUEUES - 1);
+    if (queue == x->call_queue) return 0;
+    MetalState &state = x->state;
+    MetalQueueState &from = x->queue_states[x->call_queue], &to = x->queue_states[queue];
+    from.compute = state.compute, from.compute_set = state.compute_set, from.compute_user_set = state.compute_user_set;
+    std::memcpy(from.compute_user, state.compute_user, sizeof from.compute_user);
+    state.compute = to.compute, state.compute_set = to.compute_set, state.compute_user_set = to.compute_user_set;
+    std::memcpy(state.compute_user, to.compute_user, sizeof state.compute_user);
+    x->call_queue = queue;
+    return 0;
 }
 
 extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, char *error, size_t error_size)
