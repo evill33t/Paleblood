@@ -738,7 +738,7 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
             return failed(error,size,"sampled image format does not support linear filtering on this Metal device");
         out.images[i] = {images[i].origin,
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,0};
+            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,0,0};
         if (!(out.textures[i] = image_for(x,words,descriptor,*format,false,nullptr,nullptr,error,size))) return -1;
     }
     return 0;
@@ -1136,7 +1136,7 @@ static int compute_resources(rt_executor *x, const rt_compute_shader &shader, co
         out.images[i] = {images[i].origin,
             d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : d.type == RT_IMAGE_3D ? GCN_IMAGE_3D : GCN_IMAGE_2D,
             d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || d.type == RT_IMAGE_CUBE,format->type,format->components,0,0,
-            format->components == 4 && d.type != RT_IMAGE_3D ? d.swizzle : 0};
+            format->components == 4 && d.type != RT_IMAGE_3D ? d.swizzle : 0,0};
         out.access[i] = images[i].access;
         if (!(out.textures[i] = image_for(x,words,d,*format,true,&out.layouts[i],&out.volumes[i],error,size))) return -1;
         for (unsigned j = 0; j < i; ++j) {
@@ -1545,6 +1545,7 @@ extern "C" int rt_executor_submit(rt_executor *x, char *error, size_t error_size
 }
 
 extern "C" int rt_executor_wait_ticket(rt_executor *, uint64_t, char *, size_t) { return 0; }
+extern "C" void rt_executor_set_wait_limit(rt_executor *, uint64_t) {}
 
 /* Metal runs each buffer to completion with its targets in memory and never guards them: nothing to resolve. */
 extern "C" int rt_executor_resolve(rt_executor *, uint64_t, uint64_t, char *, size_t) { return 0; }
@@ -1606,7 +1607,7 @@ extern "C" int rt_executor_run_calls(rt_executor *x, const rt_render_call *calls
                         if (set_register(state, call.u.reg.address, call.u.reg.value))
                             return failed(error, error_size, "register %#x: the executor does not interpret it yet", call.u.reg.address);
                         break;
-                    case RT_CALL_INSTANCES: state.instances = call.u.instances.count; break;
+                    case RT_CALL_INSTANCES: state.instances = call.u.instances.count ? call.u.instances.count : 1; break; /* 0 is one instance (VGT_NUM_INSTANCES) */
                     case RT_CALL_INDEX_TYPE: state.index_type = call.u.index_type.type; state.index_type_set = true; break;
                     case RT_CALL_INDEX_BASE:
                         state.index_base = call.u.index_base.address; state.index_base_set = true; state.index_base_current = true; break;
