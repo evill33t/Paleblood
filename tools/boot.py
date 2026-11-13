@@ -13,7 +13,13 @@ The title's application parameters come from game/app_params.csv: a row with sou
 its value from your own copy's parameter file (--param-sfo, default $BB_PARAM_SFO, then
 $BB_DATA_ROOT/merged/sce_sys/param.sfo), a row with source "unread" is passed as such. --app0
 (default $BB_APP0, then $BB_DATA_ROOT/merged) is your copy's application directory, which the
-runtime serves read-only as /app0.
+runtime serves read-only as /app0. Each run also gets a new empty folder, served writable as /data
+(the game's scratch mount), and removed with the run.
+
+Each row of game/module_hooks.csv replaces a function inside a mapped module before any guest code
+runs: action "return" makes it return at once, "stop" ends the run there by name. Its first_bytes
+are the function's first bytes as the mapped module holds them; a module holding others there is
+refused.
 
 Writes, from the run:
   symbols/boot.json           where the boot stops, the furthest boot milestone, the import
@@ -29,6 +35,20 @@ Writes, from the run:
                               uses: tracked like game functions (status original), replaceable later
 Prints "milestone reached: NAME" when the run gets further than the last recorded one.
 
+--capture DIR records the inputs of the game's own functions into the capture library DIR
+(docs/VERIFY.md, "Where inputs come from"): the game library's hooks become recording thunks that
+trace sampled calls of each original (docs/capture-architecture.md) and write schema-1 cases to
+DIR/<function>/: a recorded call always runs the game's original code. Other calls run the
+replacements, as in any boot with --game-lib (the renderer needs some of them); with
+--capture-originals no replacement runs at all.
+--capture-functions picks which: all-edge-verified (default: every edge-verified function of
+symbols/functions.csv), all (every hook), or a comma-separated list. With a --display, the
+functions whose replacements report to the renderer are never recorded and their replacements run
+for every call, even inside a recorded call of a caller, whose trace then ends there: the renderer
+would otherwise miss that state and stop. --capture-cases caps the
+distinct cases kept per function and run. A case identical to one DIR already holds is not
+written again.
+
 --elf defaults to $BB_ELF, then $BB_DATA_ROOT/elf/eboot.elf. --nids (a public NID database, for
 names) defaults to $BB_NID_DB, then GhidraOrbis's nid_db.xml under ../tools. The harness binary
 is $BB_PBBOOT or build/runtime/pbboot.
@@ -41,6 +61,8 @@ import datetime
 import glob
 import json
 import os
+import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -52,7 +74,8 @@ HISTORY_FIELDS = ('date', 'milestone', 'milestone_index', 'imports_total', 'impo
                   'fault_address')
 KEPT = ('phase', 'outcome', 'milestone', 'milestone_index', 'milestones', 'imports_total', 'imports_implemented',
         'imports_bundled', 'imports_unresolved', 'imports_remaining', 'imports_called', 'modules',
-        'stub_modules', 'first_unimplemented', 'fault')
+        'stub_modules', 'module_hooks', 'first_unimplemented', 'stopped_by_hook', 'runtime_stop', 'fault')
+MODULE_HOOK_ACTIONS = ('return', 'stop')
 IMPORT_FIELDS = ('importer', 'library', 'symbol', 'kind', 'provider')
 MODULE_FIELDS = ('module', 'offset', 'size', 'symbol', 'status')
 SFO_INTEGER = 0x0404
@@ -166,10 +189,89 @@ def system_param_args(overrides: list[str]) -> list[str]:
     return [a for k in sorted(params) for a in ('--system-param', f'{k}={params[k]}')]
 
 
+def module_hook_args(root: str) -> list[str]:
+    """--module-hook MODULE.elf:OFFSET:SIZE:BYTES:ACTION:NAME for every row of game/module_hooks.csv.
+    A row for a module game/modules.csv does not map, an unknown action, a non-numeric offset or
+    size, first bytes that are not 5 to 16 lowercase hex bytes within the size, or an empty name is
+    an error."""
+    path = os.path.join(root, 'game', 'module_hooks.csv')
+    if not os.path.isfile(path):
+        return []
+    mapped = set(mapped_modules(root))
+    args = []
+    with open(path, newline='') as f:
+        for r in csv.DictReader(f):
+            where = f"game/module_hooks.csv: {r['module']} {r['offset']}"
+            if r['module'] not in mapped:
+                raise ValueError(f'{where}: the module is not mapped (game/modules.csv)')
+            if r['action'] not in MODULE_HOOK_ACTIONS:
+                raise ValueError(f"{where}: action {r['action']!r} is neither return nor stop")
+            if not r['name']:
+                raise ValueError(f'{where}: no name')
+            try:
+                offset, size = int(r['offset'], 0), int(r['size'], 0)
+            except ValueError:
+                raise ValueError(f'{where}: offset and size must be numbers') from None
+            first = r['first_bytes']
+            if not re.fullmatch(r'(?:[0-9a-f]{2}){5,16}', first) or len(first) // 2 > size:
+                raise ValueError(f'{where}: first_bytes must be 5 to 16 lowercase hex bytes, no more than the size')
+            args += ['--module-hook', f"{r['module']}.elf:{offset:#x}:{size}:{first}:{r['action']}:{r['name']}"]
+    return args
+
+
+def reports_to_renderer(root: str, name: str) -> bool:
+    """Whether the replacement tells the runtime's renderer what it emitted (runtime/render_observer.h).
+    A recorded call runs the original instead, which tells nothing: with a display, the renderer
+    would then miss that call's state and stop."""
+    sys.path.insert(0, os.path.join(root, 'tools'))
+    import verification
+    return 'runtime/include/runtime/render_observer.h' in verification.source_files(root, name)
+
+
+def renderer_reporting(root: str) -> list[str]:
+    """Every hooked function whose replacement reports to the renderer (game/hooks.csv)."""
+    with open(os.path.join(root, 'game', 'hooks.csv'), newline='') as f:
+        names = [r['replacement'].removeprefix('bb_') for r in csv.DictReader(f)]
+    return [n for n in names if reports_to_renderer(root, n)]
+
+
+def capture_functions(root: str, which: str, renderer: bool = False) -> str:
+    """BB_CAPTURE_ONLY for --capture-functions: names, or "" for every hook. With the renderer
+    running, all-edge-verified leaves out the functions whose replacements report to it."""
+    if which == 'all':
+        return ''
+    if which != 'all-edge-verified':
+        return ','.join(n.strip() for n in which.split(',') if n.strip())
+    with open(os.path.join(root, 'symbols', 'functions.csv'), newline='') as f:
+        names = [r['name'] for r in csv.DictReader(f) if r['status'] == 'edge-verified']
+    return ','.join(n for n in names if not (renderer and reports_to_renderer(root, n)))
+
+
+def capture_environment(root: str, directory: str, which: str, cases: int, elf: str,
+                        originals: bool = False, renderer: bool = False) -> dict[str, str]:
+    """The runtime's capture settings (runtime/capture.h, runtime/capture_hooks.c) for --capture."""
+    env = {'BB_CAPTURE_DIR': os.path.abspath(directory), 'BB_CAPTURE_TRACE': '1',
+           'BB_CAPTURE_ORIGINAL': '1' if originals else '0',
+           'BB_CAPTURE_MAX': str(cases), 'BB_ELF': os.path.abspath(elf),
+           'BB_CAPTURE_IMPORTS': os.path.join(root, 'symbols', 'imports.csv'),
+           'BB_CAPTURE_ONLY': capture_functions(root, which, renderer)}
+    if renderer:
+        # Their replacements run for every call, also inside a recorded call of a caller (whose
+        # trace then ends there): the renderer needs each report.
+        env['BB_CAPTURE_NATIVE'] = ','.join(renderer_reporting(root))
+    return env
+
+
 def stops_at(b: dict) -> str:
     s = b.get('first_unimplemented')
     if s:
         return f"{s['caller']}->{s['library']}:{s['symbol'] or s['nid']}"
+    h = b.get('stopped_by_hook')
+    if h:
+        return f"{h['module']}:{h['name']} (stop hook)"
+    r = b.get('runtime_stop')
+    if r:
+        return f"runtime:{r['function']} ({r['reason']})"
     if b.get('fault'):
         return f"{b['outcome']} at {b['fault']['at']}"
     return b['outcome']
@@ -186,7 +288,7 @@ def record(status: dict, root: str, today: str) -> str | None:
     if os.path.isfile(path):
         with open(path, newline='') as f:
             rows = list(csv.DictReader(f))
-    first = kept.get('first_unimplemented') or {}
+    first = kept.get('first_unimplemented') or kept.get('stopped_by_hook') or {}
     fault = kept.get('fault') or {}
     row = {
         'date': today,
@@ -250,10 +352,66 @@ def main() -> int:
     ap.add_argument('--trace', action='store_true')
     ap.add_argument('--param-sfo', default=None, help="your own copy's sce_sys/param.sfo")
     ap.add_argument('--app0', default=None, help="your own copy's application directory (served read-only as /app0)")
+    ap.add_argument('--savedata', default=None, metavar='DIR',
+                    help='keep the game\'s save data in DIR (default: a new empty folder for each run)')
+    ap.add_argument('--savedata-from', default=None, metavar='DIR',
+                    help='start the run\'s new save folder as a copy of DIR (a checkpoint in the runtime\'s layout, '
+                         '<user id>/<directory>/...); DIR itself is never changed')
     ap.add_argument('--system-param', action='append', default=[], metavar='ID=VALUE',
                     help='a console system setting, e.g. 1=18 for English (United Kingdom)')
+    ap.add_argument('--addcont', action='append', default=[], metavar='LABEL',
+                    help="an add-on you own, by its entitlement label (e.g. the game's expansion); default: none")
     ap.add_argument('--no-record', action='store_true', help='run and print only')
+    ap.add_argument('--display', choices=('none', 'headless', 'window'), default='none',
+                    help='show the frames: none (default), headless, or a window (needs Vulkan and SDL3)')
+    ap.add_argument('--display-capture', default=None, metavar='DIR', help='write each presented frame to DIR as PPM')
+    ap.add_argument('--game-lib', default=None, metavar='LIBRARY',
+                    help="run the decompilation's replacements (the built game library, build/game/libbbgame.so) "
+                         'in place of the originals; not for recorded boots')
+    ap.add_argument('--audio', choices=('none', 'host'), default='none',
+                    help='play the game\'s sound on this computer (host; needs SDL3) or not at all (none, default)')
+    ap.add_argument('--input', choices=('none', 'host'), default='none',
+                    help='read the controller from this computer\'s gamepad and keyboard (host; needs SDL3 and '
+                         '--display window) or keep it at rest (none, default)')
+    ap.add_argument('--input-script', default=None, metavar='SPEC',
+                    help='play the controller from a timed script instead (SPEC, or @FILE), e.g. "45:down,47:cross" '
+                         '(seconds; 700f for presented frames); the format is in runtime/include/runtime/input_host.h. '
+                         'Not for recorded boots')
+    ap.add_argument('--keyboard-text', default=None, metavar='TEXT',
+                    help='answer each on-screen keyboard as if TEXT was typed and Done pressed (e.g. a name '
+                         'for the character creation contract); without it the keyboard is canceled. Not for recorded boots')
+    ap.add_argument('--capture', default=None, metavar='DIR',
+                    help='record the inputs of the game\'s own functions into the capture library DIR (outside the '
+                         'repository). Not for recorded boots')
+    ap.add_argument('--capture-functions', default='all-edge-verified', metavar='WHICH',
+                    help='with --capture: all-edge-verified (default), all, or NAME[,NAME...]')
+    ap.add_argument('--capture-cases', type=int, default=200, metavar='N',
+                    help='with --capture: distinct cases kept per function and run (default 200)')
+    ap.add_argument('--capture-originals', action='store_true',
+                    help='with --capture: no replacement runs, recorded or not (BB_CAPTURE_ORIGINAL)')
     a = ap.parse_args()
+    if a.capture and not a.no_record:
+        ap.error('--capture traces the game\'s functions: such a boot is not recorded (add --no-record)')
+    if a.capture and a.capture_cases < 1:
+        ap.error('--capture-cases: at least 1')
+    if a.capture and os.path.realpath(a.capture).startswith(os.path.realpath(ROOT) + os.sep):
+        ap.error('--capture: the capture library holds inputs from your own dump; keep it outside the repository')
+    if a.savedata_from and a.savedata:
+        ap.error('--savedata-from starts a new save folder: leave out --savedata')
+    if a.savedata_from and not a.no_record:
+        ap.error('--savedata-from starts from a checkpoint: such a boot is not recorded (add --no-record)')
+    if a.savedata_from and not os.path.isdir(a.savedata_from):
+        ap.error(f'--savedata-from {a.savedata_from}: not a folder')
+    if a.keyboard_text is not None and not a.no_record:
+        ap.error('--keyboard-text answers the title\'s keyboard: such a boot is not recorded (add --no-record)')
+    if a.input_script and a.input == 'host':
+        ap.error('--input-script plays the controller: leave out --input host')
+    if a.input_script and not a.no_record:
+        ap.error('--input-script presses buttons: such a boot is not recorded (add --no-record)')
+    if a.input == 'host' and a.display != 'window':
+        ap.error('--input host reads the gamepad and keyboard through the window: add --display window')
+    if a.game_lib and not a.no_record:
+        ap.error('--game-lib runs replacements in place of the originals: such a boot is not recorded (add --no-record)')
     elf = a.elf or default_elf()
     pbboot = os.environ.get('BB_PBBOOT') or os.path.join(ROOT, 'build', 'runtime', 'pbboot')
     for path, what in ((elf, 'executable (your own dump\'s eboot.elf)'), (pbboot, 'boot harness: build the repository')):
@@ -272,7 +430,10 @@ def main() -> int:
         stubs = stub_module_args(ROOT)
         stubs += app_param_args(ROOT, a.param_sfo or default_param_sfo())
         stubs += system_param_args(a.system_param)
+        for label in a.addcont:
+            stubs += ['--addcont', label]
         stubs += ['--app0', a.app0 or default_app0()]
+        hooks = module_hook_args(ROOT)
     except (ValueError, OSError) as e:
         print(f'boot: {e}', file=sys.stderr)
         return 3
@@ -280,11 +441,39 @@ def main() -> int:
     names = ['--nids', nids] if nids else []
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, 'status.json')
-        cmd = [pbboot, *objects, *stubs, '--status', out, '--timeout', str(a.timeout), *names]
+        # /data, the title's writable scratch mount: a new empty folder for each run, so every boot
+        # starts alike and nothing the game writes outlives the run.
+        data = os.path.join(d, 'data')
+        os.mkdir(data)
+        # Save data, the same way unless --savedata names a folder to keep saves in across runs.
+        savedata = a.savedata or os.path.join(d, 'savedata')
+        if a.savedata_from:
+            shutil.copytree(a.savedata_from, savedata, symlinks=False)
+        os.makedirs(savedata, exist_ok=True)
+        cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--savedata', savedata, '--status', out,
+               '--timeout', str(a.timeout), *names,
+               '--display', a.display, '--audio', a.audio, '--input', a.input]
+        if a.display_capture:
+            cmd += ['--display-capture', a.display_capture]
+        if a.input_script:
+            spec = a.input_script
+            cmd += ['--input-script', '@' + os.path.abspath(spec[1:]) if spec.startswith('@') else spec]
+        if a.keyboard_text is not None:
+            cmd += ['--keyboard-text', a.keyboard_text]
         if a.trace:
             cmd.append('--trace')
+        env = None
+        if a.capture:
+            # The hooks are where recording happens: the game library is loaded even without --game-lib.
+            game_lib = a.game_lib or os.path.join(ROOT, 'build', 'game', 'libbbgame.so')
+            if not a.game_lib:
+                cmd += ['--game-lib', game_lib]
+            env = {**os.environ, **capture_environment(ROOT, a.capture, a.capture_functions, a.capture_cases, elf,
+                                                          a.capture_originals, a.display != 'none')}
+        if a.game_lib:
+            cmd += ['--game-lib', a.game_lib]
         # The guest runs in this process's child; a hard limit covers a runaway harness.
-        p = subprocess.run(cmd, timeout=a.timeout + 60)
+        p = subprocess.run(cmd, timeout=a.timeout + 60, env=env)
         if p.returncode != 0 or not os.path.isfile(out):
             print(f'boot: harness failed (exit {p.returncode})', file=sys.stderr)
             return 3

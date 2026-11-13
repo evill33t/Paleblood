@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
+import contextlib
 import csv
 import json
 import os
@@ -82,6 +83,38 @@ class Progress(Fixture):
         txt = open(p).read().replace('62.50%', '99.00%')
         open(p, 'w').write(txt)
         self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)
+
+    def test_check_touched_answers_only_for_generated_text_the_change_made(self):
+        # main regenerates progress (tools/progress_pr.py): a branch may leave the block as the base
+        # has it, even when stale, but text it changes must be current
+        def git(*args):
+            subprocess.run(['git', '-c', 'user.name=T', '-c', 'user.email=t@example.invalid',
+                            '-c', f'core.hooksPath={self.d}/no-hooks', *args],
+                           cwd=self.d, check=True, capture_output=True)
+        git('init', '-q')
+        git('add', '-A')
+        git('commit', '-q', '-m', 'base')
+        touched = ('--root', self.d, '--check-touched', 'HEAD')
+        self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)   # stale, untouched
+        self.assertEqual(run('progress.py', *touched).returncode, 0)
+        self.assertEqual(run('progress.py', '--root', self.d, '--update-readme').returncode, 0)
+        self.assertEqual(run('progress.py', *touched).returncode, 0)                       # touched, current
+        p = f'{self.d}/README.md'
+        with open(p) as f:
+            text = f.read().replace('62.50%', '99.00%')
+        with open(p, 'w') as f:
+            f.write(text)
+        r = run('progress.py', *touched)
+        self.assertEqual(r.returncode, 1)                                                  # touched by hand
+        self.assertIn('README.md (progress block)', r.stderr)
+
+    def test_check_blocks_is_structure_only(self):
+        self.assertEqual(run('progress.py', '--root', self.d, '--check-blocks').returncode, 0)
+        with open(f'{self.d}/README.md', 'w') as f:
+            f.write('<!-- target:start -->\n<!-- target:end -->\n')
+        r = run('progress.py', '--root', self.d, '--check-blocks')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('no progress block', r.stderr)
 
     def test_empty_export(self):
         write_csv(f'{self.d}/symbols/ghidra_functions.csv', ['address', 'size'], [])
@@ -267,6 +300,23 @@ class GameData(unittest.TestCase):
         os.makedirs(os.path.join(self.d, 'docs'), exist_ok=True)
         self.assertEqual(self.check('docs/shot.png', self.PNG).returncode, 1)
 
+    def test_allowlisted_frame_may_be_up_to_8_mib(self):
+        self.allow('docs/assets/frame.png  # pbboot --display-capture: a renderer frame\n')
+        frame = self.PNG + b'\0' * (8 * 1024 * 1024 - len(self.PNG))
+        r = self.check('docs/assets/frame.png', frame)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_allowlisted_frame_over_8_mib_refused(self):
+        self.allow('docs/assets/frame.png  # pbboot --display-capture: a renderer frame\n')
+        r = self.check('docs/assets/frame.png', self.PNG + b'\0' * (9 * 1024 * 1024))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('byte limit', r.stderr)
+
+    def test_unlisted_3_mib_file_refused(self):
+        self.allow('docs/assets/frame.png  # pbboot --display-capture: a renderer frame\n')
+        self.assertEqual(self.check('docs/assets/data.txt', b'a' * (3 * 1024 * 1024)).returncode, 1)
+        self.assertEqual(self.check('docs/assets/other.png', self.PNG + b'\0' * (3 * 1024 * 1024)).returncode, 1)
+
     def test_unlisted_file_in_assets_refused(self):
         self.allow('docs/assets/verify.gif  # tools/verify.py run\n')
         self.assertEqual(self.check('docs/assets/other.png', self.PNG).returncode, 1)
@@ -280,6 +330,18 @@ class Agnostic(Fixture):
         open(f'{self.d}/runtime/a.c', 'w').write('/* see frame_timing_update */\n')
         self.assertEqual(run('check_agnostic.py', '--root', self.d).returncode, 1)
         open(f'{self.d}/runtime/a.c', 'w').write('int a = 0x00402000;\n')
+        self.assertEqual(run('check_agnostic.py', '--root', self.d).returncode, 1)
+
+    def test_flags_a_module_hook_offset(self):
+        os.makedirs(f'{self.d}/runtime')
+        os.makedirs(f'{self.d}/game', exist_ok=True)
+        open(f'{self.d}/game/module_hooks.csv', 'w').write('module,offset,size,first_bytes,action,name\n'
+                                                        'libA,0x00012340,8,0102030405,stop,f\n')
+        open(f'{self.d}/runtime/a.c', 'w').write('int ok;\n')
+        self.assertEqual(run('check_agnostic.py', '--root', self.d).returncode, 0)
+        open(f'{self.d}/runtime/a.c', 'w').write('long a = 0x00012340;\n')
+        self.assertEqual(run('check_agnostic.py', '--root', self.d).returncode, 1)
+        open(f'{self.d}/runtime/a.c', 'w').write('const char *b = "0102030405";\n')
         self.assertEqual(run('check_agnostic.py', '--root', self.d).returncode, 1)
 
 
@@ -419,9 +481,11 @@ class Verify(unittest.TestCase):
 class Loader(unittest.TestCase):
     """runtime/loader.c through libpbloader.so, on a synthetic executable."""
 
-    def test_maps_relocates_and_binds(self):
-        sys.path.insert(0, os.path.join(ROOT, 'tools'))
+    def setUp(self):
+        sys.path.insert(0, TOOLS)
         sys.path.insert(0, os.path.join(ROOT, 'test'))
+
+    def test_maps_relocates_and_binds(self):
         import ctypes
         import harness
         import ps4elf
@@ -459,6 +523,204 @@ class Loader(unittest.TestCase):
             self.assertEqual(buf.raw[0x100], 0x65)
         finally:
             shutil.rmtree(d)
+
+
+    @contextlib.contextmanager
+    def opened_image(self, data):
+        """Open owned fixture bytes through the selected built loader, without executing them."""
+        import ctypes
+        import harness
+        with tempfile.TemporaryDirectory(prefix='loader-segments-') as folder:
+            path = os.path.join(folder, 'owned.elf')
+            with open(path, 'wb') as stream:
+                stream.write(data)
+            exe = harness.open_executable(path)
+            try:
+                yield exe
+            finally:
+                exe['loader'].rt_elf_close.argtypes = [ctypes.c_void_p]
+                exe['loader'].rt_elf_close.restype = None
+                exe['loader'].rt_elf_close(exe['handle'])
+
+    def mapped_bytes(self, exe, bind=None):
+        """Map fixture data into a canary-surrounded writable buffer; never call guest code."""
+        import ctypes
+        import harness
+        guard = 16
+        buffer = ctypes.create_string_buffer(exe['size'] + 2 * guard)
+        ctypes.memset(ctypes.addressof(buffer), 0xa5, len(buffer))
+        base = ctypes.addressof(buffer) + guard
+        callback = harness.LOADER_BIND(bind or (lambda user, index, kind: 0))
+        error = ctypes.create_string_buffer(256)
+        self.assertEqual(exe['loader'].rt_elf_map(exe['handle'], base, callback, None, error, len(error)),
+                         0, error.value)
+        self.assertEqual(buffer.raw[:guard], b'\xa5' * guard)
+        self.assertEqual(buffer.raw[-guard:], b'\xa5' * guard)
+        return base, buffer.raw[guard:-guard]
+
+    def test_sce_relro_copy_extent_flags_zero_fill_and_relocations(self):
+        import ps4elf
+        payload = bytes(range(0x40))
+        fixture = ps4elf.build(
+            segments=[(0, b'LOAD', 0x40, 5), (0x100, b'DATA', 0x20, 6)],
+            symbols=[('DATANID#A#B', ps4elf.STT_OBJECT, None)],
+            relocations=[(0x208, ps4elf.R_X86_64_RELATIVE, 0, 0x40),
+                         (0x218, ps4elf.R_X86_64_64, 1, 3),
+                         (0x258, ps4elf.R_X86_64_RELATIVE, 0, 0x77)],
+            relro_segments=[(0x200, payload, 0x60, 4)])
+        with self.opened_image(fixture) as exe:
+            self.assertEqual(exe['size'], 0x260)
+            self.assertEqual(exe['loads'], [(0, 0x40, 5), (0x100, 0x20, 6), (0x200, 0x60, 4)])
+            calls = []
+            def bind(user, index, kind):
+                calls.append((index, kind))
+                return 0x12340000
+            base, mapped = self.mapped_bytes(exe, bind)
+            self.assertEqual(calls, [(0, 1)])
+            expected = bytearray(0x260)
+            expected[:4] = b'LOAD'
+            expected[0x100:0x104] = b'DATA'
+            expected[0x200:0x240] = payload
+            struct.pack_into('<Q', expected, 0x208, base + 0x40)
+            struct.pack_into('<Q', expected, 0x218, 0x12340003)
+            struct.pack_into('<Q', expected, 0x258, base + 0x77)
+            self.assertEqual(mapped, expected)
+            # Nonzero, unrelocated RELRO bytes specifically distinguish the old zero-page result.
+            self.assertEqual(mapped[0x220:0x240], payload[0x20:])
+
+    def test_sce_relro_zero_file_range_is_zero_filled(self):
+        import ps4elf
+        for vaddr, memsz, extent in ((0x80, 0x20, 0xa0), (0x20, 0, 0x20)):
+            with self.subTest(vaddr=vaddr, memsz=memsz):
+                fixture = ps4elf.build([(0, b'LOAD', 0x20, 5)], [], [],
+                                      relro_segments=[(vaddr, b'', memsz, 4)])
+                with self.opened_image(fixture) as exe:
+                    self.assertEqual((exe['size'], exe['loads']),
+                                     (extent, [(0, 0x20, 5), (vaddr, memsz, 4)]))
+                    _, mapped = self.mapped_bytes(exe)
+                    self.assertEqual(mapped, b'LOAD' + bytes(extent - 4))
+
+    def test_existing_load_overlap_order_and_gnu_relro_are_unchanged(self):
+        import ps4elf
+        overlap = ps4elf.build([(0, b'A' * 16, 0x20, 5), (8, b'BBBB', 0x10, 6)], [], [])
+        with self.opened_image(overlap) as exe:
+            _, mapped = self.mapped_bytes(exe)
+            self.assertEqual(mapped, b'AAAAAAAA' + b'BBBB' + b'AAAA' + bytes(16))
+        fixture = bytearray(ps4elf.build([(0, b'LOAD', 0x20, 5)], [], [],
+                                        relro_segments=[(0x80, b'NOT_COPIED', 0x20, 4)]))
+        struct.pack_into('<I', fixture, 64 + 56, 0x6474e552)  # GNU_RELRO remains an ignored overlay tag.
+        with self.opened_image(fixture) as exe:
+            self.assertEqual((exe['size'], exe['loads']), (0x20, [(0, 0x20, 5)]))
+            _, mapped = self.mapped_bytes(exe)
+            self.assertEqual(mapped, b'LOAD' + bytes(0x1c))
+
+    def test_sce_relro_malformed_ranges_are_rejected_before_mapping(self):
+        import harness
+        import ps4elf
+        original = ps4elf.build([(0, b'LOAD', 0x40, 5)], [], [],
+                               relro_segments=[(0x80, b'RELRO', 0x20, 4)])
+        relro_offset = struct.unpack_from('<Q', original, 64 + 56 + 8)[0]
+        for name, fixture, message in [('empty file', b'', 'cannot read'),
+                                       ('truncated RELRO file', original[:relro_offset + 4], 'outside the file')]:
+            with self.subTest(name=name), self.assertRaisesRegex(harness.BadInput, message):
+                with self.opened_image(fixture):
+                    pass
+        changes = [('outside file', 8, len(original), 'outside the file'),
+                   ('file larger than memory', 40, 4, 'larger than memory'),
+                   ('image end overflow', 16, (1 << 64) - 8, 'image range overflows')]
+        for name, offset, value, message in changes:
+            malformed = bytearray(original)
+            struct.pack_into('<Q', malformed, 64 + 56 + offset, value)
+            with self.subTest(name=name), self.assertRaisesRegex(harness.BadInput, message):
+                with self.opened_image(malformed):
+                    pass
+        # Reject overlap involving SCE RELRO in either header order; do not change LOAD-only policy.
+        for reversed_order in (False, True):
+            malformed = bytearray(original)
+            struct.pack_into('<Q', malformed, 64 + 56 + 16, 0x20)
+            if reversed_order:
+                a, b = bytes(malformed[64:120]), bytes(malformed[120:176])
+                malformed[64:120], malformed[120:176] = b, a
+            with self.subTest(reversed_order=reversed_order), self.assertRaisesRegex(harness.BadInput, 'overlaps'):
+                with self.opened_image(malformed):
+                    pass
+        only_relro = bytearray(original)
+        struct.pack_into('<I', only_relro, 64, 0)  # An SCE allocation alone does not replace mandatory PT_LOAD.
+        with self.assertRaisesRegex(harness.BadInput, 'no PT_LOAD'):
+            with self.opened_image(only_relro):
+                pass
+
+    def test_tls_template_metadata_and_mapped_initialization(self):
+        import ctypes
+        import ps4elf
+        class Tls(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in ('vaddr', 'filesz', 'memsz', 'align')]
+        for alignment, expected in ((0, 1), (1, 1), (64, 64)):
+            fixture = ps4elf.build([(0, b'LOADTLS', 0x20, 5)], [], [], tls=(4, 3, 17, alignment))
+            with self.subTest(alignment=alignment), self.opened_image(fixture) as exe:
+                lib = exe['loader']
+                lib.rt_elf_tls_segment.argtypes = [ctypes.c_void_p]
+                lib.rt_elf_tls_segment.restype = ctypes.POINTER(Tls)
+                tls = lib.rt_elf_tls_segment(exe['handle']).contents
+                self.assertEqual((tls.vaddr, tls.filesz, tls.memsz, tls.align), (4, 3, 17, expected))
+                _, mapped = self.mapped_bytes(exe)
+                self.assertEqual(mapped[4:7], b'TLS')
+        # TBSS has no initialization image to dereference, including an empty template.
+        for size in (0, 17):
+            fixture = ps4elf.build([(0, b'LOAD', 0x20, 5)], [], [], tls=(4, 0, size, 16))
+            with self.opened_image(fixture):
+                pass
+
+    def test_tls_template_and_sce_relro_allocation_coexist(self):
+        import ctypes
+        import ps4elf
+        class Tls(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in ('vaddr', 'filesz', 'memsz', 'align')]
+        fixture = ps4elf.build([(0, b'LOADTLS', 0x20, 5)], [], [],
+                              relro_segments=[(0x80, b'RELRO', 0x10, 4)],
+                              tls=(4, 3, 17, 16))
+        with self.opened_image(fixture) as exe:
+            lib = exe['loader']
+            lib.rt_elf_tls_segment.argtypes = [ctypes.c_void_p]
+            lib.rt_elf_tls_segment.restype = ctypes.POINTER(Tls)
+            tls = lib.rt_elf_tls_segment(exe['handle']).contents
+            self.assertEqual((tls.vaddr, tls.filesz, tls.memsz, tls.align), (4, 3, 17, 16))
+            self.assertEqual(exe['loads'], [(0, 0x20, 5), (0x80, 0x10, 4)])
+            _, mapped = self.mapped_bytes(exe)
+            expected = bytearray(0x90)
+            expected[:7] = b'LOADTLS'
+            expected[0x80:0x85] = b'RELRO'
+            self.assertEqual(mapped, expected)
+
+    def test_tls_malformed_templates_are_rejected_before_mapping(self):
+        import harness
+        import ps4elf
+        fixture = ps4elf.build([(0, b'LOADTLS', 0x20, 5)], [], [], tls=(4, 3, 17, 16))
+        tls_header = 64 + 56
+        changes = [('file larger than memory', 40, 2, 'invalid TLS'),
+                   ('outside file', 8, len(fixture), 'invalid TLS'),
+                   ('bad alignment', 48, 3, 'invalid TLS'),
+                   ('unmapped template', 16, 0x1000, 'not backed'),
+                   ('BSS instead of file bytes', 16, 8, 'not backed'),
+                   ('wrong source bytes', 8, 0, 'not backed'),
+                   ('overflowing virtual range', 16, (1 << 64) - 1, 'not backed')]
+        for name, offset, value, message in changes:
+            bad = bytearray(fixture)
+            struct.pack_into('<Q', bad, tls_header + offset, value)
+            with self.subTest(name=name), self.assertRaisesRegex(harness.BadInput, message):
+                with self.opened_image(bad):
+                    pass
+        duplicate = bytearray(fixture)
+        count = struct.unpack_from('<H', duplicate, 56)[0]
+        duplicate[64 + count * 56:64 + (count + 1) * 56] = fixture[tls_header:tls_header + 56]
+        struct.pack_into('<H', duplicate, 56, count + 1)
+        with self.assertRaisesRegex(harness.BadInput, 'invalid TLS'):
+            with self.opened_image(duplicate):
+                pass
+        overlap = ps4elf.build([(0, b'LOADTLS', 0x20, 5), (4, b'BAD', 3, 6)], [], [], tls=(4, 3, 17, 16))
+        with self.assertRaisesRegex(harness.BadInput, 'conflicting'):
+            with self.opened_image(overlap):
+                pass
 
 
 class Boot(unittest.TestCase):
@@ -582,9 +844,13 @@ class Boot(unittest.TestCase):
         self.assertIn('stub modules loaded: libSceTestStub (1 of 2)', p.stdout)
 
     def test_loading_a_module_that_is_not_a_stub_stops_by_name(self):
-        p, _ = self.run_sysmodule_load(0x7f03, ['0x7f01:libSceTestStub'])
-        self.assertEqual(p.returncode, -signal.SIGABRT)
+        p, s = self.run_sysmodule_load(0x7f03, ['0x7f01:libSceTestStub'])
         self.assertIn('sceSysmoduleLoadModule: module 0x7f03: not a stub module', p.stderr)
+        # The boot harness records the stop as the run's outcome, with the function and the reason.
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((s['outcome'], s['first_unimplemented'], s['fault']), ('runtime stop', None, None))
+        self.assertEqual(s['runtime_stop']['function'], 'sceSysmoduleLoadModule')
+        self.assertTrue(s['runtime_stop']['reason'].startswith('module 0x7f03: not a stub module'))
 
     def test_bad_stub_module_arguments_are_refused(self):
         exe = os.path.join(ROOT, 'no-such.elf')
@@ -684,6 +950,336 @@ class Boot(unittest.TestCase):
                 boot.app_param_args(d, sfo_path)
         finally:
             shutil.rmtree(d)
+
+    def run_pbboot(self, files: dict, modules: list[str], hooks: list[str]):
+        """Writes files (name -> bytes), runs pbboot on e.elf with the modules and module hooks, and
+        returns the process and its status (None when none was written)."""
+        d = tempfile.mkdtemp()
+        try:
+            for name, data in files.items():
+                with open(os.path.join(d, name), 'wb') as fh:
+                    fh.write(data)
+            args = [a for m in modules for a in ('--module', os.path.join(d, m))]
+            args += [a for hook in hooks for a in ('--module-hook', hook)]
+            p = subprocess.run([self.pbboot, os.path.join(d, 'e.elf'), *args, '--status', os.path.join(d, 's.json'),
+                                '--timeout', '5'], capture_output=True, text=True, timeout=60)
+            status = None
+            if os.path.isfile(os.path.join(d, 's.json')):
+                with open(os.path.join(d, 's.json')) as fh:
+                    status = json.load(fh)
+            return p, status
+        finally:
+            shutil.rmtree(d)
+
+    def boot_with_module_hooks(self, hooks: list[str]):
+        """An executable that returns at once, and a module whose entry sets eax, calls g (+0x40,
+        which calls an unbound import), traps unless eax came back unchanged, then calls h (+0x80,
+        seven bytes: mov eax, 42; nop; ret). Every call keeps the callee's stack 16-byte aligned. The
+        data segment's memory size (0x1010) leaves the image's end off a page boundary."""
+        import harness
+        import ps4elf
+        exe = ps4elf.build(segments=[(0, b'\xc3' + bytes(0xfff), 0x1000, 5)], symbols=[], relocations=[])
+        code = bytearray(0x1000)
+        code[0x00:0x21] = (b'\x48\x83\xec\x08' +                        # sub rsp, 8
+                           b'\xb8\x34\x12\x00\x00' +                    # mov eax, 0x1234
+                           b'\xe8' + struct.pack('<i', 0x40 - 0x0e) +   # call g
+                           b'\x3d\x34\x12\x00\x00\x74\x02\x0f\x0b' +    # cmp eax, 0x1234; je +2; ud2
+                           b'\xe8' + struct.pack('<i', 0x80 - 0x1c) +   # call h
+                           b'\x48\x83\xc4\x08\xc3')                     # add rsp, 8; ret
+        code[0x40:0x4f] = (b'\x48\x83\xec\x08' + b'\xff\x15' + struct.pack('<i', 0x1000 - 0x4a) +  # g: call [slot]
+                           b'\x48\x83\xc4\x08\xc3')
+        code[0x80:0x87] = b'\xb8\x2a\x00\x00\x00\x90\xc3'                                         # h
+        mod = ps4elf.build(segments=[(0, bytes(code), 0x1000, 5), (0x1000, bytes(8), 0x1010, 6)],
+                           symbols=[(harness.nid('sceKernelOpen') + '#A#A', ps4elf.STT_FUNC, None)], relocations=[],
+                           jump_slots=[(0x1000, ps4elf.R_X86_64_JUMP_SLOT, 1, 0)])
+        return self.run_pbboot({'e.elf': exe, 'm.elf': mod}, ['m.elf'], hooks)
+
+    def test_module_hook_return_skips_a_function(self):
+        p, s = self.boot_with_module_hooks([])
+        self.assertEqual((p.returncode, s['outcome'], s['first_unimplemented']['caller']),
+                         (0, 'unimplemented', 'm.elf'))
+        # returned, not a fault: the stub left eax as the caller had it
+        p, s = self.boot_with_module_hooks(['m.elf:0x40:15:4883ec08ff15:return:g'])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((s['outcome'], s['stopped_by_hook'], s['fault']), ('returned', None, None))
+        self.assertEqual(s['module_hooks'], [{'module': 'm.elf', 'offset': '0x40', 'action': 'return', 'name': 'g'}])
+
+    def test_module_hook_stop_names_the_function_and_its_caller(self):
+        # h is seven bytes: too short for an absolute jump, long enough for the relative one
+        p, s = self.boot_with_module_hooks(['m.elf:0x40:15:4883ec08ff15:return:g',
+                                            'm.elf:0x80:7:b82a00000090c3:stop:ns::h'])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((s['outcome'], s['phase'], s['first_unimplemented']), ('stopped', 'm.elf', None))
+        self.assertEqual(s['stopped_by_hook'],
+                         {'module': 'm.elf', 'offset': '0x80', 'name': 'ns::h', 'returns_to': 'm.elf+0x1c'})
+        self.assertIn('ns::h is replaced by a stop, called from m.elf+0x1c', p.stdout)
+
+    def guest_thread_files(self, after_create: bytes) -> dict:
+        """A module whose entry creates a guest thread, then runs after_create (at +0x48) on the main
+        thread; the thread calls h (+0x180, seven bytes)."""
+        import harness
+        import ps4elf
+        exe = ps4elf.build(segments=[(0, b'\xc3' + bytes(0xfff), 0x1000, 5)], symbols=[], relocations=[])
+        code = bytearray(0x1000)
+        # sub rsp, 0x28; attr init, stack size 1 MiB, detach state 0; create(&thread, &attr, worker, 0, 0)
+        code[0x00:0x48] = bytes.fromhex(
+            '4883ec28488d7c2408ff15f10f0000488d7c2408be00001000ff15e90f0000488d7c240831f6ff15e40f0000'
+            '488d7c2410488d742408488d15c300000031c94531c0ff15d00f0000')
+        code[0x48:0x48 + len(after_create)] = after_create
+        code[0x100:0x10e] = bytes.fromhex('4883ec08e8770000004883c408c3')       # worker: call h; ret
+        code[0x180:0x187] = b'\xb8\x2a\x00\x00\x00\x90\xc3'                     # h
+        names = ['scePthreadAttrInit', 'scePthreadAttrSetstacksize', 'scePthreadAttrSetdetachstate',
+                 'scePthreadCreate']
+        mod = ps4elf.build(segments=[(0, bytes(code), 0x1000, 5), (0x1000, bytes(32), 0x1000, 6)],
+                           symbols=[(harness.nid(n) + '#B#A', ps4elf.STT_FUNC, None) for n in names], relocations=[],
+                           jump_slots=[(0x1000 + 8 * i, ps4elf.R_X86_64_JUMP_SLOT, i + 1, 0) for i in range(4)],
+                           libraries=[(ps4elf.DT_SCE_IMPORT_LIB, 'libkernel', 1)])
+        return {'e.elf': exe, 'm.elf': mod}
+
+    def test_module_hook_stop_on_a_guest_thread_is_reported_once(self):
+        # the main thread spins (pause; jmp back): only the guest thread can stop the run
+        files = self.guest_thread_files(b'\xf3\x90\xeb\xfc')
+        for _ in range(5):
+            p, s = self.run_pbboot(files, ['m.elf'], ['m.elf:0x180:7:b82a00000090c3:stop:ns::h'])
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertEqual((s['outcome'], s['stopped_by_hook']),
+                             ('stopped', {'module': 'm.elf', 'offset': '0x180', 'name': 'ns::h',
+                                          'returns_to': 'm.elf+0x109'}))
+
+    def test_a_stop_racing_a_fault_is_reported_whole(self):
+        # the main thread faults (ud2) while the guest thread reaches the stop: either may win, but
+        # only one, and the report must be whole every time
+        files = self.guest_thread_files(b'\x0f\x0b')
+        for _ in range(20):
+            p, s = self.run_pbboot(files, ['m.elf'], ['m.elf:0x180:7:b82a00000090c3:stop:ns::h'])
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertIsNotNone(s, p.stderr)
+            self.assertIn(s['outcome'], ('stopped', 'fault'))
+            self.assertEqual(s['stopped_by_hook'] is not None, s['outcome'] == 'stopped')
+            self.assertEqual(s['fault'] is not None, s['outcome'] == 'fault')
+
+    def test_module_hooks_go_in_before_any_module_runs(self):
+        """Module a (started first) calls f, exported by module b; f calls an unbound import. A hook
+        in b must already be in place when the entry of a runs."""
+        import harness
+        import ps4elf
+        f = harness.nid('f') + '#B#A'
+        exe = ps4elf.build(segments=[(0, b'\xc3' + bytes(0xfff), 0x1000, 5)], symbols=[], relocations=[])
+        acode = bytearray(0x1000)
+        acode[:15] = (b'\x48\x83\xec\x08' + b'\xff\x15' + struct.pack('<i', 0x1000 - 0x0a) +   # call [slot of f]
+                      b'\x48\x83\xc4\x08\xc3')
+        a = ps4elf.build(segments=[(0, bytes(acode), 0x1000, 5), (0x1000, bytes(8), 0x1000, 6)],
+                         symbols=[(f, ps4elf.STT_FUNC, None)], relocations=[],
+                         jump_slots=[(0x1000, ps4elf.R_X86_64_JUMP_SLOT, 1, 0)],
+                         libraries=[(ps4elf.DT_SCE_IMPORT_LIB, 'libfoo', 1)])
+        bcode = bytearray(0x1000)
+        bcode[0] = 0xc3                                                                  # entry of b: ret
+        bcode[0x40:0x4f] = (b'\x48\x83\xec\x08' + b'\xff\x15' + struct.pack('<i', 0x1000 - 0x4a) +  # f
+                            b'\x48\x83\xc4\x08\xc3')
+        unbound = harness.nid('sceKernelOpen') + '#A#A'
+        b = ps4elf.build(segments=[(0, bytes(bcode), 0x1000, 5), (0x1000, bytes(8), 0x1000, 6)],
+                         symbols=[(f, ps4elf.STT_FUNC, 0x40), (unbound, ps4elf.STT_FUNC, None)], relocations=[],
+                         jump_slots=[(0x1000, ps4elf.R_X86_64_JUMP_SLOT, 2, 0)],
+                         libraries=[(ps4elf.DT_SCE_EXPORT_LIB, 'libfoo', 1)])
+        files = {'e.elf': exe, 'a.elf': a, 'b.elf': b}
+        p, s = self.run_pbboot(files, ['a.elf', 'b.elf'], [])
+        self.assertEqual((s['outcome'], s['phase'], s['first_unimplemented']['caller']),
+                         ('unimplemented', 'a.elf', 'b.elf'))
+        p, s = self.run_pbboot(files, ['a.elf', 'b.elf'], ['b.elf:0x40:15:4883ec08ff15:return:f'])
+        self.assertEqual((p.returncode, s['outcome']), (0, 'returned'), p.stderr)
+
+    def test_bad_module_hooks_are_refused_before_the_run(self):
+        g = 'm.elf:0x40:15:4883ec08ff15:return:g'
+        # malformed: an unknown action, no name, a missing field, a sign, a space, a stray letter, no
+        # module; first bytes missing, odd, not hex, upper case, under five, over the size, over 16
+        for bad in ('m.elf:0x80:7:b82a00000090c3:skip:h', 'm.elf:0x80:7:b82a00000090c3:stop:',
+                    'm.elf:0x80:b82a00000090c3:stop:h', 'm.elf:-1:7:b82a00000090c3:stop:h',
+                    'm.elf:+1:7:b82a00000090c3:stop:h', 'm.elf: 1:7:b82a00000090c3:stop:h',
+                    'm.elf:0x80:7x:b82a00000090c3:stop:h', ':0x80:7:b82a00000090c3:stop:h', 'm.elf:0x80:7:stop:h',
+                    'm.elf:0x80:7::stop:h', 'm.elf:0x80:7:b82a00000090c:stop:h', 'm.elf:0x80:7:zz2a00000090c3:stop:h',
+                    'm.elf:0x80:7:B82A00000090C3:stop:h',
+                    'm.elf:0x80:4:b82a0000:stop:h', 'm.elf:0x80:7:b82a00000090c3c3:stop:h',
+                    'm.elf:0x40:20:' + '00' * 17 + ':return:g'):
+            p, s = self.boot_with_module_hooks([bad])
+            self.assertEqual((p.returncode, s), (2, None), (bad, p.stderr))
+        p, s = self.boot_with_module_hooks([f'm.elf:{0x100 + 8 * i:#x}:5:0000000000:return:f{i}' for i in range(17)])
+        self.assertEqual((p.returncode, s), (2, None))
+        self.assertIn('more than 16 module hooks', p.stderr)
+        # no such module; the executable (by file and by its label); data; across the executable
+        # segment's end; past the image; a size that would wrap around
+        for bad in ('x.elf:0x80:7:b82a00000090c3:stop:h', 'e.elf:0x0:5:c300000000:return:e',
+                    'eboot:0x0:5:c300000000:return:e', 'm.elf:0x1000:5:0000000000:return:d',
+                    'm.elf:0xffe:5:0000000000:stop:h', 'm.elf:0x2011:5:0000000000:stop:h',
+                    'm.elf:0x40:0xffffffffffffffff:4883ec08ff15:return:g'):
+            p, s = self.boot_with_module_hooks([bad])
+            self.assertEqual((p.returncode, s), (3, None), (bad, p.stderr))
+        # other bytes than expected, in the first, a middle or the last one: another build; nothing runs
+        for bad in ('m.elf:0x80:7:b92a00000090c3:stop:h', 'm.elf:0x80:7:b82b00000090c3:stop:h',
+                    'm.elf:0x80:7:b82a00000090c2:stop:h'):
+            p, s = self.boot_with_module_hooks([bad])
+            self.assertEqual((p.returncode, s), (3, None), (bad, p.stderr))
+            self.assertIn(f'm.elf+0x80 holds b82a00000090c3, not the expected {bad.split(":")[3]}', p.stderr)
+        # overlapping and duplicate hooks, by as little as one byte: the second would overwrite the
+        # first one's jump
+        for pair in ([g, 'm.elf:0x42:5:ec08ff15b6:return:g2'], [g, 'm.elf:0x4e:5:c300000000:return:tail'],
+                     ['m.elf:0x80:7:b82a00000090c3:stop:h', 'm.elf:0x80:7:b82a00000090c3:return:h']):
+            p, s = self.boot_with_module_hooks(pair)
+            self.assertEqual((p.returncode, s), (3, None), (pair, p.stderr))
+            self.assertIn('overlaps', p.stderr)
+        # right after another hook, and the last five bytes of the executable segment: places for a jump
+        for pair in ([g, 'm.elf:0x4f:5:0000000000:return:next'], [g, 'm.elf:0xffb:5:0000000000:return:edge']):
+            p, s = self.boot_with_module_hooks(pair)
+            self.assertEqual((p.returncode, s['outcome']), (0, 'returned'), (pair, p.stderr))
+
+    def test_boot_passes_module_hooks(self):
+        import boot
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, 'game'))
+            with open(os.path.join(d, 'game', 'modules.csv'), 'w') as fh:
+                fh.write('module,action,sysmodule,notes\nlibA,map,,mapped\nlibB,stub,0x0038,stub\n')
+            path = os.path.join(d, 'game', 'module_hooks.csv')
+            self.assertEqual(boot.module_hook_args(d), [])                 # no file: no hooks
+            header = 'module,offset,size,first_bytes,action,name\n'
+            with open(path, 'w') as fh:
+                fh.write(header + 'libA,0x00000010,128,0102030405,return,probe\n'
+                                  'libA,0x20,7,a1a2a3a4a5a6a7,stop,ns::reader\n')
+            self.assertEqual(boot.module_hook_args(d),
+                             ['--module-hook', 'libA.elf:0x10:128:0102030405:return:probe',
+                              '--module-hook', 'libA.elf:0x20:7:a1a2a3a4a5a6a7:stop:ns::reader'])
+            # a stub module is not mapped; an unknown action; no name; not a number; first bytes
+            # missing, odd, under five, upper case, not hex, over the size, over 16
+            for bad in ('libB,0x10,8,0102030405,stop,f', 'libA,0x10,8,0102030405,skip,f',
+                        'libA,0x10,8,0102030405,stop,', 'libA,ten,8,0102030405,stop,f', 'libA,0x10,8,,stop,f',
+                        'libA,0x10,8,010203040,stop,f', 'libA,0x10,8,01020304,stop,f',
+                        'libA,0x10,8,A1A2A3A4A5,stop,f', 'libA,0x10,8,zz02030405,stop,f',
+                        'libA,0x10,5,010203040506,stop,f', 'libA,0x10,128,' + '00' * 17 + ',stop,f'):
+                with open(path, 'w') as fh:
+                    fh.write(header + bad + '\n')
+                with self.assertRaises(ValueError, msg=bad):
+                    boot.module_hook_args(d)
+        finally:
+            shutil.rmtree(d)
+        for arg in boot.module_hook_args(ROOT)[1::2]:                     # the game's own file parses
+            self.assertRegex(arg, r'^[^:]+\.elf:0x[0-9a-f]+:\d+:(?:[0-9a-f]{2}){5,16}:(return|stop):.+$')
+
+    def test_boot_hands_the_module_hooks_to_the_harness(self):
+        import boot
+        d = tempfile.mkdtemp()
+        try:
+            for name in ['eboot', *boot.mapped_modules(ROOT)]:
+                open(os.path.join(d, f'{name}.elf'), 'wb').close()
+            fake = os.path.join(d, 'pbboot')          # records its arguments and writes an empty status
+            with open(fake, 'w') as fh:
+                fh.write('#!/usr/bin/env python3\nimport json, sys\n'
+                         f'json.dump(sys.argv[1:], open({os.path.join(d, "argv.json")!r}, "w"))\n'
+                         'open(sys.argv[sys.argv.index("--status") + 1], "w").write("{}")\n')
+            os.chmod(fake, 0o755)
+            # A parameter file holding the one integer game/app_params.csv reads (PSF: header, key
+            # index, keys, data).
+            keys = b'USER_DEFINED_PARAM_1\0'
+            sfo = struct.pack('<4sIIII', b'\0PSF', 0x101, 20 + 16, 20 + 16 + len(keys), 1)
+            sfo += struct.pack('<HHIII', 0, 0x0404, 4, 4, 0) + keys + struct.pack('<i', 1)
+            with open(os.path.join(d, 'param.sfo'), 'wb') as fh:
+                fh.write(sfo)
+            p = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'boot.py'), '--elf',
+                                os.path.join(d, 'eboot.elf'), '--param-sfo', os.path.join(d, 'param.sfo'),
+                                '--app0', d, '--no-record'],
+                               env={**os.environ, 'BB_PBBOOT': fake, 'BB_NID_DB': ''},
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            with open(os.path.join(d, 'argv.json')) as fh:
+                argv = json.load(fh)
+            hooks = [a for i, a in enumerate(argv) if i and argv[i - 1] == '--module-hook']
+            self.assertEqual(hooks, boot.module_hook_args(ROOT)[1::2])
+        finally:
+            shutil.rmtree(d)
+
+    def test_boot_starts_the_save_folder_from_a_checkpoint(self):
+        """--savedata-from: the run's save folder starts as a copy of the checkpoint, which the run's
+        writes leave unchanged; it needs --no-record and excludes --savedata."""
+        import boot
+        d = tempfile.mkdtemp()
+        try:
+            for name in ['eboot', *boot.mapped_modules(ROOT)]:
+                open(os.path.join(d, f'{name}.elf'), 'wb').close()
+            checkpoint = os.path.join(d, 'checkpoint', '1', 'SAVE0001')
+            os.makedirs(os.path.join(checkpoint, 'sce_sys'))
+            with open(os.path.join(checkpoint, 'userdata0000'), 'wb') as fh:
+                fh.write(b'before')
+            fake = os.path.join(d, 'pbboot')  # records the save folder's file, then overwrites it, as a save would
+            with open(fake, 'w') as fh:
+                fh.write('#!/usr/bin/env python3\nimport json, os, sys\n'
+                         'saves = sys.argv[sys.argv.index("--savedata") + 1]\n'
+                         'path = os.path.join(saves, "1", "SAVE0001", "userdata0000")\n'
+                         f'json.dump([saves, open(path).read()], open({os.path.join(d, "seen.json")!r}, "w"))\n'
+                         'open(path, "w").write("after")\n'
+                         'open(sys.argv[sys.argv.index("--status") + 1], "w").write("{}")\n')
+            os.chmod(fake, 0o755)
+            keys = b'USER_DEFINED_PARAM_1\0'
+            sfo = struct.pack('<4sIIII', b'\0PSF', 0x101, 20 + 16, 20 + 16 + len(keys), 1)
+            sfo += struct.pack('<HHIII', 0, 0x0404, 4, 4, 0) + keys + struct.pack('<i', 1)
+            with open(os.path.join(d, 'param.sfo'), 'wb') as fh:
+                fh.write(sfo)
+            base = [sys.executable, os.path.join(ROOT, 'tools', 'boot.py'), '--elf', os.path.join(d, 'eboot.elf'),
+                    '--param-sfo', os.path.join(d, 'param.sfo'), '--app0', d, '--savedata-from', os.path.join(d, 'checkpoint')]
+            env = {**os.environ, 'BB_PBBOOT': fake, 'BB_NID_DB': ''}
+            p = subprocess.run(base + ['--no-record'], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            with open(os.path.join(d, 'seen.json')) as fh:
+                saves, seen = json.load(fh)
+            self.assertEqual(seen, 'before')
+            self.assertNotEqual(os.path.realpath(saves), os.path.realpath(os.path.join(d, 'checkpoint')))
+            with open(os.path.join(checkpoint, 'userdata0000')) as fh:
+                self.assertEqual(fh.read(), 'before')
+            for extra in ([], ['--no-record', '--savedata', os.path.join(d, 'kept')]):
+                p = subprocess.run(base + extra, env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(p.returncode, 2, p.stderr)
+        finally:
+            shutil.rmtree(d)
+
+    def test_a_stop_hook_is_recorded_as_where_the_boot_stops(self):
+        import boot
+        hook = {'module': 'm.elf', 'offset': '0x80', 'name': 'ns::h', 'returns_to': 'm.elf+0xe'}
+        status = {'outcome': 'stopped', 'phase': 'm.elf', 'milestone': 'loaded', 'milestone_index': 0,
+                  'first_unimplemented': None, 'stopped_by_hook': hook, 'fault': None,
+                  'module_hooks': [{'module': 'm.elf', 'offset': '0x80', 'action': 'stop', 'name': 'ns::h'}]}
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, 'symbols'))
+            boot.record(status, d, '2026-10-27')
+            with open(os.path.join(d, 'symbols', 'boot.json')) as fh:
+                kept = json.load(fh)
+            self.assertEqual((kept['stopped_by_hook'], kept['module_hooks']), (hook, status['module_hooks']))
+            with open(os.path.join(d, 'symbols', 'boot_history.csv'), newline='') as fh:
+                row = list(csv.DictReader(fh))[-1]
+            self.assertEqual((row['stops_at'], row['outcome'], row['returns_to']),
+                             ('m.elf:ns::h (stop hook)', 'stopped', 'm.elf+0xe'))
+        finally:
+            shutil.rmtree(d)
+        import progress                                                  # the README's "Boot stops at"
+        self.assertEqual(progress.boot_stop(status), '`ns::h` (a stop hook in m.elf, called from `m.elf+0xe`)')
+
+    def test_a_runtime_stop_is_recorded_as_where_the_boot_stops(self):
+        import boot
+        import progress
+        stop = {'function': 'sceKernelOpen', 'reason': 'a path outside /app0'}
+        status = {'outcome': 'runtime stop', 'phase': 'eboot', 'milestone': 'files', 'milestone_index': 3,
+                  'first_unimplemented': None, 'stopped_by_hook': None, 'runtime_stop': stop, 'fault': None}
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, 'symbols'))
+            boot.record(status, d, '2026-11-04')
+            with open(os.path.join(d, 'symbols', 'boot.json')) as fh:
+                self.assertEqual(json.load(fh)['runtime_stop'], stop)
+            with open(os.path.join(d, 'symbols', 'boot_history.csv'), newline='') as fh:
+                row = list(csv.DictReader(fh))[-1]
+            self.assertEqual((row['stops_at'], row['outcome']),
+                             ('runtime:sceKernelOpen (a path outside /app0)', 'runtime stop'))
+        finally:
+            shutil.rmtree(d)
+        self.assertEqual(progress.boot_stop(status),
+                         '`sceKernelOpen`, which stops by name (a path outside /app0)')
 
     def test_c_nid_matches_python(self):
         import ctypes

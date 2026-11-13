@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera parameter stage, included only by update.cpp.
 #pragma once
-#include "../../engine/camera_update/math.h"
+#include "math.h"
 // Selects and interpolates camera parameters before the null-subject return.
 // Parameter selection and interpolation precede the subject-dependent camera stages.
 // The caller returns from the whole update on return_from_update; otherwise execution
@@ -12,7 +12,7 @@
 namespace camera::update::parameters
 {
 inline constexpr int32_t binary_search_half = 2;
-namespace scalar = engine::camera_parameter_math;
+namespace scalar = camera::update::math;
 
 RT_GLOBAL(0x04d38ad0, repository_singleton_name, const char);
 RT_GLOBAL(0x04d25e58, degrees_to_radians, const float);
@@ -223,7 +223,7 @@ void interpolate_parameter_row(FollowCamera &state, RowView row)
     // Keep the first target/current reads ahead of the one retained rate read.
     const float distance_target = row.camera_distance();
     const float previous_distance = state.target_camera_distance;
-    const float rate = engine::camera_frame_policy::parameter_gain(state.parameter_chase_rate);
+    const float rate = camera::update::frame_policy::parameter_gain(state.parameter_chase_rate);
     state.target_camera_distance = chase(previous_distance, distance_target, rate);
 
     const float minimum_pitch_target =
@@ -277,7 +277,7 @@ ParameterStageDecision apply_parameter_stage(FollowCamera &state, Subject *subje
     const float target_distance = state.target_camera_distance;
     // The FPS cave receives the already rounded distance difference.
     const float distance_difference = scalar::subtract(target_distance, previous_distance);
-    const float distance_rate = engine::camera_frame_policy::parameter_gain(camera_distance_chase_rate.get());
+    const float distance_rate = camera::update::frame_policy::parameter_gain(camera_distance_chase_rate.get());
     state.camera_distance =
         scalar::add(previous_distance, scalar::multiply(distance_difference, distance_rate));
 

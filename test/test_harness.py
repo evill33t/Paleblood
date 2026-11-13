@@ -151,7 +151,19 @@ def boot_image(stacked_imports=False):
     code[0xc40:0xc45] = bytes.fromhex('8d447707 c3')                 # lea eax, [rdi+rsi*2+7]
     # A real dereference through the computed address must still be checked.
     code[0xc50:0xc58] = bytes.fromhex('488d4708 0fb600 c3')
+    # Reserve entries after resizing writes, before the independent callback fixtures.
+    # These synthetic functions preserve RAX, replace AL, and add stack words.
+    code[0xbb0:0xbb1] = bytes.fromhex('c3')
+    code[0xbc0:0xbc3] = bytes.fromhex('b0a5c3')
+    code[0xbd0:0xbdb] = bytes.fromhex('48034424084803442410c3')
+    code[0xbe0:0xbe3] = bytes.fromhex('9c58c3')                    # pushfq; pop rax; ret
+    # Returns rsi - rdi: the distance between two buffers, as a heap computes a block's size.
+    code[0xbf0:0xbf7] = bytes.fromhex('4889f0 4829f8 c3')
     code[0xc60:0xc68] = bytes.fromhex('8d047509000000 c3')         # lea eax, [rsi*2+9], no base
+    # Float arguments past the second: xmm0, xmm1 = xmm2, xmm3; xmm4, xmm5; xmm6, xmm7.
+    code[0xc68:0xc6f] = bytes.fromhex('0f28c2 0f28cb c3')
+    code[0xc70:0xc77] = bytes.fromhex('0f28c4 0f28cd c3')
+    code[0xc78:0xc7f] = bytes.fromhex('0f28c6 0f28cf c3')
     # Tail calls preserve the fixture's six GP registers, overflow slots and XMM0 exactly.
     # A second import is enabled only for the new cases; existing images keep their layout.
     code[0xc80:0xc86] = bytes.fromhex('ff25') + struct.pack('<i', 0x1000 - 0xc86)
@@ -244,6 +256,63 @@ class Harness(unittest.TestCase):
             return self.side_case(path, address=address)
         finally:
             self.trace_instructions = False
+
+    def test_entry_rax_seed_preserves_full_width_and_partial_byte_results(self):
+        for seed in (0, 1, 0x123456789abcde00, 0xffffffffffffffff):
+            for address, expected in (('0x00400bb0', seed),
+                                      ('0x00400bc0', (seed & ~0xff) | 0xa5)):
+                with self.subTest(seed=hex(seed), address=address):
+                    case = {'schema': 1, 'address': address, 'id': 'entry-rax',
+                            'returns': 'i64', 'args': {'rax': hex(seed)},
+                            'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+                    Path(self.case).write_text(json.dumps(case))
+                    result = self.side_case(self.case, address=address)
+                    self.assertEqual(result['ret']['rax'], hex(expected))
+                    self.assertTrue(all(value == 'kept' for value in result['preserved'].values()))
+
+    def test_entry_rax_seed_survives_odd_and_even_stack_argument_counts(self):
+        seed = 0x1234567800000001
+        for stack in ([7], [7, 11], [7, 11, 19]):
+            with self.subTest(stack=stack):
+                case = {'schema': 1, 'address': '0x00400bd0', 'id': 'rax-stack',
+                        'returns': 'i64', 'args': {'rax': hex(seed)}, 'stack': stack,
+                        'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+                Path(self.case).write_text(json.dumps(case))
+                result = self.side_case(self.case, address=case['address'])
+                self.assertEqual(result['ret']['rax'], hex(seed + sum(stack[:2])))
+                self.assertTrue(all(value == 'kept' for value in result['preserved'].values()))
+
+    def test_stack_setup_preserves_defined_entry_status_flags(self):
+        # The loop exits after TEST on a zero count. AF is undefined, so compare only the
+        # defined CF/PF/ZF/SF/OF bits rather than requiring a complete RFLAGS constant.
+        defined_status_mask = 0x8c5
+        zero_status_flags = 0x44
+        for stack in ([], [7], [7, 11], [7, 11, 19]):
+            for seed in (0, 0x1234567800000001, 0xffffffffffffffff):
+                with self.subTest(stack=stack, seed=hex(seed)):
+                    case = {'schema': 1, 'address': '0x00400be0', 'id': 'entry-status-flags',
+                            'returns': 'i64', 'args': {'rax': hex(seed)}, 'stack': stack,
+                            'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+                    Path(self.case).write_text(json.dumps(case))
+                    result = self.side_case(self.case, address=case['address'])
+                    self.assertEqual(int(result['ret']['rax'], 0) & defined_status_mask, zero_status_flags)
+                    self.assertTrue(all(value == 'kept' for value in result['preserved'].values()))
+
+    def test_omitted_entry_rax_stays_zero_across_batched_cases(self):
+        directory = Path(self.d) / 'rax-batch'
+        directory.mkdir()
+        for index, args in enumerate(({'rax': '0x123456789abcdef0'}, {})):
+            case = {'schema': 1, 'address': '0x00400bb0', 'id': str(index),
+                    'returns': 'i64', 'args': args, 'buffers': {}, 'memory': [],
+                    'imports': [], 'stubs': []}
+            (directory / (str(index) + '.json')).write_text(json.dumps(case))
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot,
+               '--cases', str(directory), '--address', '0x00400bb0']
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cases = json.loads(result.stdout)
+        self.assertEqual(cases['0']['ret']['rax'], '0x123456789abcdef0')
+        self.assertEqual(cases['1']['ret']['rax'], '0x0')
 
     def test_instruction_trace_records_unaligned_read_and_same_value_write(self):
         case = {'schema': 1, 'address': '0x00400950', 'id': 'read-write', 'returns': 'void',
@@ -551,6 +620,23 @@ class Harness(unittest.TestCase):
                   if event['region'] == 'buf:memory']
         self.assertEqual([(event['access'], event['width']) for event in events], [('read', 8)])
 
+    def test_float_arguments_past_the_second_are_loaded(self):
+        values = {f'xmm{n}': bytes(range(16 * n, 16 * n + 16)).hex() for n in range(2, 8)}
+        for address, first, second in (('0x00400c68', 'xmm2', 'xmm3'), ('0x00400c70', 'xmm4', 'xmm5'),
+                                       ('0x00400c78', 'xmm6', 'xmm7')):
+            with self.subTest(address=address):
+                case = {'schema': 1, 'address': address, 'id': 'xmm-args', 'returns': 'vec',
+                        'args': dict(values), 'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+                Path(self.case).write_text(json.dumps(case))
+                result = self.side_case(self.case, address=address)
+                self.assertEqual(result['ret'], {'xmm0': values[first], 'xmm1': values[second]}, result)
+        case['args'] = {'xmm8': '00'}
+        Path(self.case).write_text(json.dumps(case))
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot, '--case', self.case,
+               '--address', '0x00400c78']
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertIn('xmm8', r.stdout + r.stderr)
+
     def test_control_flow_coverage_reports_fixture_branch_paths(self):
         fixtures = [
             {'schema': 1, 'address': '0x00400c00', 'id': 'branch-zero', 'returns': 'i32',
@@ -703,6 +789,18 @@ class Harness(unittest.TestCase):
                             for event in r['access_trace']))
         self.assertIn('not instrumented', r['access_trace_scope'])
 
+    def test_import_write_at_a_fixed_place(self):
+        # A recorded import's change seen through a register that need not be an argument is
+        # scripted at its place: it lands there whatever the registers hold in the replay.
+        script = dict(CASE['imports'][0])
+        script['writes'] = script['writes'] + [{'addr': 'buf:aux+0x8', 'bytes': 'aabbccdd'}]
+        case = dict(CASE, buffers={'out': {'size': 8}, 'aux': {'size': 16}}, imports=[script])
+        Path(self.case).write_text(json.dumps(case))
+        r = self.side()
+        self.assertIn({'addr': 'buf:aux+0x8', 'bytes': 'aabbccdd'}, r['writes'])
+        self.assertIn({'addr': 'buf:out+0x0', 'bytes': '3413'}, r['writes'])
+        self.assertNotIn('errors', r)
+
     def test_byte_precise_redzone_reports_guest_buffer_overrun(self):
         case = {'schema': 1, 'address': '0x00400940', 'id': 'redzone', 'returns': 'void',
                 'args': {'rdi': 'buf:out'}, 'buffers': {'out': {'size': 8}},
@@ -713,6 +811,51 @@ class Harness(unittest.TestCase):
         result = self.side_case(path, address='0x00400940')
         self.assertEqual(result['redzone_writes'], [{'buffer': 'out', 'first_offset': 8, 'changed_bytes': 1}])
         self.assertTrue(any('redzone modified' in error for error in result['errors']))
+
+    def distance_case(self, buffers):
+        case = {'schema': 1, 'address': '0x00400bf0', 'id': 'distance', 'returns': 'i64',
+                'args': {'rdi': 'buf:a+0x0', 'rsi': 'buf:b+0x0'}, 'buffers': buffers,
+                'memory': [], 'imports': [], 'stubs': []}
+        path = os.path.join(self.d, 'distance.json')
+        with open(path, 'w') as stream:
+            json.dump(case, stream)
+        return self.side_case(path, address='0x00400bf0')
+
+    def test_buffers_keep_their_recorded_distance_at_their_origin(self):
+        # Two heap blocks 64 MiB apart in the run: replayed at their origins, the code sees the
+        # same distance (a heap's block size), however the sandbox would have packed them.
+        far = 0x2100000010 + (64 << 20)
+        result = self.distance_case({'a': {'size': 32, 'origin': '0x2100000010', 'bytes': '01'},
+                                     'b': {'size': 16, 'origin': hex(far)}})
+        self.assertNotIn('errors', result)
+        self.assertEqual(int(result['ret']['rax'], 0), 64 << 20)
+        # Without origins, or with one outside the guest window, they go to the sandbox.
+        packed = self.distance_case({'a': {'size': 32}, 'b': {'size': 16, 'origin': '0x10000'}})
+        self.assertNotEqual(int(packed['ret']['rax'], 0), 64 << 20)
+
+    def test_buffer_at_its_origin_keeps_its_redzone(self):
+        case = {'schema': 1, 'address': '0x00400940', 'id': 'redzone', 'returns': 'void',
+                'args': {'rdi': 'buf:out'}, 'buffers': {'out': {'size': 8, 'origin': '0x2200000000'}},
+                'memory': [], 'imports': [], 'stubs': []}
+        path = os.path.join(self.d, 'redzone-origin.json')
+        with open(path, 'w') as stream:
+            json.dump(case, stream)
+        result = self.side_case(path, address='0x00400940')
+        self.assertEqual(result['redzone_writes'], [{'buffer': 'out', 'first_offset': 8, 'changed_bytes': 1}])
+
+    def test_overlapping_origins_are_refused(self):
+        case = {'schema': 1, 'address': '0x00400bf0', 'id': 'overlap', 'returns': 'i64',
+                'args': {'rdi': 'buf:a+0x0', 'rsi': 'buf:b+0x0'},
+                'buffers': {'a': {'size': 32, 'origin': '0x2300000000'}, 'b': {'size': 16, 'origin': '0x2300000010'}},
+                'memory': [], 'imports': [], 'stubs': []}
+        path = os.path.join(self.d, 'overlap.json')
+        with open(path, 'w') as stream:
+            json.dump(case, stream)
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot, '--case', path,
+               '--address', '0x00400bf0']
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('overlap at their origins', r.stdout + r.stderr)
 
     def compare(self, broken):
         res = lambda r: {'schema': 1, 'address': '0x00400000', 'cases': [r]}
@@ -880,6 +1023,71 @@ class Harness(unittest.TestCase):
         self.assertNotIn('fault', result, result)
         self.assertTrue(all(value == 'kept' for value in result['preserved'].values()), result)
         return result
+
+    def test_width_limited_callback_inputs_ignore_padding_but_detect_low_word_changes(self):
+        results = []
+        for high, low in ((0xaaaaaaaa, 0x12345678), (0x55555555, 0x12345678),
+                          (0x55555555, 0x12345679)):
+            case = {'schema': 1, 'address': '0x00400800', 'id': 'u32-padding',
+                    'returns': 'i64', 'args': {'rdi': 0xfedcba9889abcdef},
+                    'stack': [(high << 32) | low], 'buffers': {}, 'imports': [],
+                    'stubs': [{'address': '0x00400800', 'argc': 0, 'ret': 0,
+                               'argu32': [0, 6]}]}
+            Path(self.case).write_text(json.dumps(case))
+            result = self.side_case(self.case, address=case['address'])
+            self.assertEqual(result['calls'][0]['args'], [])
+            self.assertEqual(result['calls'][0]['argu32'], ['0x89abcdef', hex(low)])
+            results.append({'schema': 1, 'address': case['address'], 'cases': [result]})
+        self.assertEqual(verify.compare(results[0], results[1])['failed'], 0)
+        self.assertEqual(verify.compare(results[0], results[2])['failed'], 1)
+
+    def test_byte_callback_inputs_ignore_padding_but_detect_low_byte_changes(self):
+        results = []
+        for high, low in ((0xaaaaaaaaaaaaaa, 0x78), (0x55555555555555, 0x78),
+                          (0x55555555555555, 0x79)):
+            case = {'schema': 1, 'address': '0x00400800', 'id': 'byte-padding',
+                    'returns': 'i64', 'args': {'rdi': 0xfedcba9889abcdef},
+                    'stack': [0, 0, 0, (high << 8) | low], 'buffers': {}, 'imports': [],
+                    'stubs': [{'address': '0x00400800', 'argc': 0, 'ret': 0,
+                               'argu8': [0, 9]}]}
+            Path(self.case).write_text(json.dumps(case))
+            result = self.side_case(self.case, address=case['address'])
+            self.assertEqual(result['calls'][0]['args'], [])
+            self.assertEqual(result['calls'][0]['argu8'], ['0xef', hex(low)])
+            results.append({'schema': 1, 'address': case['address'], 'cases': [result]})
+        self.assertEqual(verify.compare(results[0], results[1])['failed'], 0)
+        self.assertEqual(verify.compare(results[0], results[2])['failed'], 1)
+
+    def test_import_width_limited_inputs_use_the_same_recording_contract(self):
+        case = json.loads(json.dumps(CASE))
+        case['imports'][0].update({'argc': 0, 'argu32': [0], 'argu8': [0]})
+        Path(self.case).write_text(json.dumps(case))
+        result = self.side()
+        self.assertEqual(result['calls'][0]['args'], [])
+        self.assertEqual(result['calls'][0]['argu32'], ['0x7'])
+        self.assertEqual(result['calls'][0]['argu8'], ['0x7'])
+
+    def test_import_can_return_a_declared_buffer_pointer(self):
+        case = {'schema': 1, 'address': '0x00400c80', 'id': 'import-buffer-return',
+                'returns': 'i64', 'args': {},
+                'buffers': {'payload': {'size': 16, 'bytes': 'a5' * 16}},
+                'memory': [], 'stubs': [],
+                'imports': [{'name': 'testImport', 'argc': 0, 'ret': 'buf:payload+0x3'}]}
+        Path(self.case).write_text(json.dumps(case))
+        result = self.side_case(self.case, address=case['address'])
+        self.assertEqual(result['ret'], {'rax': 'buf:payload+0x3'})
+        self.assertEqual(result.get('errors', []), [])
+        self.assertEqual(result['writes'], [])
+
+    def test_zero_shape_physics_fixture_references_only_declared_buffers(self):
+        import runpy
+        fixtures = runpy.run_path(os.path.join(ROOT, 'game', 'physics',
+                                              'instance_construct_cases.py'))['CASES']
+        case = next(item for item in fixtures if item['id'] == 'no_shapes')
+        for script in case['stubs']:
+            for write in script.get('writes', []):
+                if 'pointer' in write:
+                    self.assertIn(write['pointer'].split('+', 1)[0], case['buffers'])
 
     def test_scripted_callbacks_capture_seventh_pointer_with_float_and_writes(self):
         for kind in ('imports', 'stubs'):

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The entry table queried by the timed-record collector. Only the lookup fields are known.
+// An entry table whose handles 0x01314320 resolves (callers: the 0x02717f30-0x02718c80 family and
+// 0x0210f5a0). Only the lookup fields are known.
 #pragma once
 
 #include <cstddef>

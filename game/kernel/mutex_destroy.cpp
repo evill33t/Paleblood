@@ -28,8 +28,10 @@ constexpr int32_t destroy_source_line = 0x234;
 
 }  // namespace
 
-extern "C" int bb_kernel_mutex_destroy(MutexHandle *mutex, uint8_t static_storage)
+extern "C" int bb_kernel_mutex_destroy(MutexHandle *mutex, uint64_t static_storage_input)
 {
+    // The original consumes only SIL; incoming upper register bits are not an ABI guarantee.
+    const uint8_t static_storage = static_cast<uint8_t>(static_storage_input);
     if (kernel_mutex_destroy(mutex) != 0) return kernel_error;
     if (static_storage == 0) {
         KernelContext *context = kernel_context_instance.get();

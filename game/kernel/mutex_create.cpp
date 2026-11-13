@@ -40,8 +40,10 @@ constexpr uint32_t mutex_allocation_flags = 0x200000;
 
 }  // namespace
 
-extern "C" int bb_kernel_mutex_create(MutexHandle **out, uint8_t static_storage)
+extern "C" int bb_kernel_mutex_create(MutexHandle **out, uint64_t static_storage_input)
 {
+    // The original consumes only SIL; incoming upper register bits are not an ABI guarantee.
+    const uint8_t static_storage = static_cast<uint8_t>(static_storage_input);
     MutexHandle *storage = static_mutex_storage.address();
     if (static_storage == 0) {
         KernelContext *context = kernel_context_instance.get();

@@ -4,7 +4,10 @@
 
 Denominator: symbols/ghidra_functions.csv (address,size), the functions Ghidra
 finds in the executable blocks of the target eboot (see tools/ghidra/).
-Numerator: rows of symbols/functions.csv by status. Each level includes the next:
+Numerator: rows of symbols/functions.csv and members of the function families
+(symbols/families.csv, symbols/families/; tools/families.py) by status. Families are many tiny
+functions that share one replacement each, so they are also counted on their own ("families"):
+they move the function count far more than the byte count. Each level includes the next:
 replaced (hooked and builds) > edge-verified (verify.py passes on the generated edge cases)
 > verified (and on inputs recorded in the game).
 Runtime: symbols/boot.json, written by tools/boot.py from a run of the boot harness
@@ -18,8 +21,16 @@ usage: progress.py [--root DIR] [--out FILE] [--update-readme] [--check] [--stat
   --status-line    print the current-status sentence (plain text, for issues and descriptions)
   --update-readme  rewrite the status, progress and target blocks of README.md, the status
                    block of CONTRIBUTING.md (and the progress
-                   block of STATUS.md when it has one)
-  --check          exit 1 if those blocks differ from the generated ones
+                   block of STATUS.md when it has one), and the status card
+                   (docs/assets/status-light.svg, docs/assets/status-dark.svg, by tools/status_card.py)
+  --check          exit 1 if those blocks or the card differ from the generated ones (main:
+                   .github/workflows/progress.yml; the regeneration PR from tools/progress_pr.py)
+  --check-touched [REF ...]
+                   the same, but only for generated text this tree changed: text equal to its
+                   version in one of the REFs (default: origin/main and the merge base with it)
+                   passes. Pull requests, hooks and tests check this; progress itself is
+                   regenerated on main by tools/progress_pr.py, never in feature branches.
+  --check-blocks   structure only: the README blocks exist and the cards are generated cards
 """
 from __future__ import annotations
 
@@ -29,7 +40,10 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
+
+import families as fam
 
 DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMPLEMENTED = ('replaced', 'edge-verified', 'verified')
@@ -58,6 +72,8 @@ def pct(part: int, whole: int) -> float | None:
 def compute(root: str) -> dict:
     export = read_csv(os.path.join(root, 'symbols', 'ghidra_functions.csv'))
     funcs = read_csv(os.path.join(root, 'symbols', 'functions.csv'))
+    members = fam.function_rows(root)
+    funcs = funcs + members
     total_f = len(export)
     total_b = sum(int(r['size']) for r in export)
 
@@ -85,6 +101,7 @@ def compute(root: str) -> dict:
         'inputs': {
             'ghidra_functions_sha256': sha256_file(os.path.join(root, 'symbols', 'ghidra_functions.csv')),
             'functions_sha256': sha256_file(os.path.join(root, 'symbols', 'functions.csv')),
+            'families_sha256': sha256_file(os.path.join(root, 'symbols', 'families.csv')),
         },
         'total': {'functions': total_f, 'bytes': total_b},
         'tracked': tally(funcs),
@@ -95,8 +112,28 @@ def compute(root: str) -> dict:
         'verified': {**tally(ver), 'functions_pct': pct(len(ver), total_f),
                      'bytes_pct': pct(tally(ver)['bytes'], total_b)},
         'systems': {k: systems[k] for k in sorted(systems)},
+        'families': family_summary(root, members, total_f, total_b),
         'runtime': runtime(root),
     }
+
+
+def family_summary(root: str, members: list[dict], total_f: int, total_b: int) -> dict:
+    """Family members on their own: how many, how many bytes, and per family."""
+    impl = [m for m in members if m['status'] in IMPLEMENTED]
+    edge = [m for m in members if m['status'] in EDGE]
+    per = {}
+    for f in fam.families(root):
+        rows = [m for m in members if m['family'] == f['family']]
+        per[f['family']] = {'shape': f['shape'], 'system': f['system'], 'members': len(rows),
+                            'bytes': sum(int(m['size']) for m in rows),
+                            'edge_verified': sum(m['status'] in EDGE for m in rows),
+                            'verified': sum(m['status'] == 'verified' for m in rows)}
+    replaced_bytes = sum(int(m['size']) for m in impl)
+    return {'count': len(per), 'replaced': {'functions': len(impl), 'bytes': replaced_bytes,
+                                             'functions_pct': pct(len(impl), total_f),
+                                             'bytes_pct': pct(replaced_bytes, total_b)},
+            'edge_verified': {'functions': len(edge), 'bytes': sum(int(m['size']) for m in edge)},
+            'families': per}
 
 
 def runtime(root: str) -> dict | None:
@@ -117,6 +154,7 @@ def runtime(root: str) -> dict | None:
             'imports_pct': pct(covered, b['imports_total']),
             'milestone': b['milestone'], 'milestone_index': b['milestone_index'],
             'milestones': len(b['milestones']) - 1, 'first_unimplemented': b.get('first_unimplemented'),
+            'stopped_by_hook': b.get('stopped_by_hook'), 'runtime_stop': b.get('runtime_stop'),
             'fault': b.get('fault'), 'outcome': b['outcome']}
 
 
@@ -165,17 +203,36 @@ def render_progress(d: dict) -> str:
         f"| Target (Ghidra export) | {t['functions']} | {t['bytes']} |",
         f"| Replaced | {r['functions']} ({fmt_pct(r['functions_pct'])}) | "
         f"{r['bytes']} ({fmt_pct(r['bytes_pct'])}) |",
+        *family_row(d['families']),
         f"| Edge-verified | {e['functions']} ({fmt_pct(e['functions_pct'])}) | "
         f"{e['bytes']} ({fmt_pct(e['bytes_pct'])}) |",
         f"| Verified | {v['functions']} ({fmt_pct(v['functions_pct'])}) | "
         f"{v['bytes']} ({fmt_pct(v['bytes_pct'])}) |",
         '',
         'Each row includes the next: verified functions are also edge-verified and replaced.',
+        *family_note(d['families']),
         '',
         *render_runtime(d['runtime']),
         'Generated by `tools/progress.py --update-readme` from `symbols/`. Do not edit.',
         '',
     ])
+
+
+def family_row(f: dict) -> list[str]:
+    """The family share of the replaced row, so a count that families inflate reads as such."""
+    if not f['count']:
+        return []
+    r = f['replaced']
+    families = 'function family' if f['count'] == 1 else 'function families'
+    return [f"| of which in {f['count']} {families} | {r['functions']} ({fmt_pct(r['functions_pct'])}) | "
+            f"{r['bytes']} ({fmt_pct(r['bytes_pct'])}) |"]
+
+
+def family_note(f: dict) -> list[str]:
+    if not f['count']:
+        return []
+    return ['Function families are many tiny identical functions (an empty method, a getter) that share one '
+            'replacement each (docs/FAMILIES.md): they move the function count much more than the byte count.']
 
 
 def render_runtime(rt: dict | None) -> list[str]:
@@ -201,6 +258,14 @@ def boot_stop(rt: dict) -> str:
         caller = stop.get('caller')
         by = f", called by {caller}" if caller and caller != 'eboot' else ''
         return f"`{stop['symbol'] or stop['nid']}` ({stop['library']}{by})"
+    hook = rt.get('stopped_by_hook')
+    if hook:
+        return f"`{hook['name']}` (a stop hook in {hook['module']}, called from `{hook['returns_to']}`)"
+    stop = rt.get('runtime_stop')
+    if stop:
+        return f"`{stop['function']}`, which stops by name ({stop['reason']})"
+    if rt['outcome'] == 'timeout':  # where a running process was when the time ran out says nothing
+        return "the run's time limit, still running (no call stopped it)"
     if rt.get('fault'):
         return f"{rt['outcome']} at `{rt['fault']['at']}`"
     return rt['outcome']
@@ -246,15 +311,135 @@ def apply_blocks(text: str, bodies: dict[str, str]) -> str:
     return text
 
 
+GENERATED_MARKDOWN = (('README.md', ('status', 'progress', 'target')), ('STATUS.md', ('progress',)),
+                      ('CONTRIBUTING.md', ('status',)))
+REQUIRED_BLOCKS = {'README.md': ('progress', 'target')}
+
+
+def block_body(text: str | None, name: str) -> str | None:
+    m = block_re(name).search(text) if text is not None else None
+    return m.group(2) if m else None
+
+
+def read_text(path: str) -> str | None:
+    if not os.path.isfile(path):
+        return None
+    with open(path) as f:
+        return f.read()
+
+
+def expected_outputs(root: str, data: dict) -> dict[str, dict[str, str] | str]:
+    """Every generated output: Markdown file -> {block: body} for the blocks it has (README.md must
+    have its progress and target blocks), status card -> its full SVG text."""
+    bodies = {'status': render_status(data), 'progress': render_progress(data), 'target': render_target(root)}
+    out: dict[str, dict[str, str] | str] = {}
+    for name, blocks in GENERATED_MARKDOWN:
+        cur = read_text(os.path.join(root, name))
+        if cur is None:
+            continue
+        for block in REQUIRED_BLOCKS.get(name, ()):
+            if block_body(cur, block) is None:
+                raise SystemExit(f'progress: {name} has no {block} block')
+        present = {b: bodies[b] for b in blocks if block_body(cur, b) is not None}
+        if present:
+            out[name] = present
+    import status_card  # the card draws on this module, so it is imported only here
+    out.update(status_card.render_all(root))
+    return out
+
+
+def git_show(repo: str, ref: str, path: str) -> str | None:
+    r = subprocess.run(['git', '-C', repo, 'show', f'{ref}:{path}'], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def git_repo_for(root: str) -> str:
+    """The repository that holds ROOT, or the current directory's (the pre-commit hook checks a
+    checkout of the index outside the repository)."""
+    r = subprocess.run(['git', '-C', root, 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+    return root if r.returncode == 0 else os.getcwd()
+
+
+def default_refs(repo: str) -> list[str]:
+    """origin/main and this branch's merge base with it; HEAD when there is no origin/main."""
+    def rev(*args: str) -> str | None:
+        r = subprocess.run(['git', '-C', repo, *args], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    main = rev('rev-parse', '-q', '--verify', 'refs/remotes/origin/main^{commit}')
+    if not main:
+        return ['HEAD']
+    base = rev('merge-base', 'HEAD', main)
+    return [main] + ([base] if base else [])
+
+
+def stale_outputs(root: str, data: dict, untouched_refs: list[str] | None = None) -> list[str]:
+    """Generated outputs that differ from what this tree generates. With UNTOUCHED_REFS, an output
+    that equals its version in one of those commits is not this change's and is not reported:
+    progress is regenerated on main (tools/progress_pr.py), so a branch only answers for the
+    generated text it changes itself."""
+    repo = git_repo_for(root) if untouched_refs else root
+    stale = []
+    for name, want in expected_outputs(root, data).items():
+        cur = read_text(os.path.join(root, name))
+        if isinstance(want, str):
+            parts = {None: (want, cur)}
+        else:
+            parts = {block: (body, block_body(cur, block)) for block, body in want.items()}
+        for block, (body, have) in parts.items():
+            if have == body:
+                continue
+            if untouched_refs:
+                bases = (git_show(repo, ref, name) for ref in untouched_refs)
+                if any((base if block is None else block_body(base, block)) == have
+                       for base in bases if base is not None):
+                    continue
+            stale.append(name if block is None else f'{name} ({block} block)')
+    return stale
+
+
+def write_outputs(root: str, data: dict) -> None:
+    for name, want in expected_outputs(root, data).items():
+        path = os.path.join(root, name)
+        cur = read_text(path)
+        new = want if isinstance(want, str) else apply_blocks(cur, want)
+        if new == cur:
+            continue
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        with open(path, 'w') as f:
+            f.write(new)
+        print(f'progress: {name} updated')
+
+
+def check_blocks(root: str) -> list[str]:
+    """Structure only: the required blocks exist and each status card is a generated card."""
+    errs = []
+    for name, blocks in REQUIRED_BLOCKS.items():
+        cur = read_text(os.path.join(root, name))
+        errs += [f'{name} has no {b} block' for b in blocks if cur is not None and block_body(cur, b) is None]
+    import status_card
+    for name in status_card.OUT_FILES.values():
+        cur = read_text(os.path.join(root, name))
+        if cur is not None and not (cur.startswith('<svg ') and 'Generated by tools/status_card.py' in cur):
+            errs.append(f'{name} is not a generated status card')
+    return errs
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--root', default=DEFAULT_ROOT)
     ap.add_argument('--out')
     ap.add_argument('--update-readme', action='store_true')
     ap.add_argument('--check', action='store_true')
+    ap.add_argument('--check-touched', nargs='*', metavar='REF')
+    ap.add_argument('--check-blocks', action='store_true')
     ap.add_argument('--status-line', action='store_true')
     a = ap.parse_args()
 
+    if a.check_blocks:
+        errs = check_blocks(a.root)
+        for e in errs:
+            print(f'progress: {e}', file=sys.stderr)
+        return 1 if errs else 0
     data = compute(a.root)
     if a.status_line:
         print(status_sentence(data, False))
@@ -263,36 +448,27 @@ def main() -> int:
     if a.out:
         with open(a.out, 'w') as f:
             f.write(js)
-    if not (a.update_readme or a.check):
-        if not a.out:
-            sys.stdout.write(js)
+    if a.update_readme:
+        write_outputs(a.root, data)
         return 0
-
-    bodies = {'status': render_status(data), 'progress': render_progress(data), 'target': render_target(a.root)}
-    stale = []
-    for name, blocks in (('README.md', bodies), ('STATUS.md', {'progress': bodies['progress']}),
-                         ('CONTRIBUTING.md', {'status': bodies['status']})):
-        path = os.path.join(a.root, name)
-        if not os.path.isfile(path):
-            continue
-        with open(path) as f:
-            cur = f.read()
-        blocks = {k: b for k, b in blocks.items() if (name == 'README.md' and k != 'status') or block_re(k).search(cur)}
-        if not blocks:
-            continue
-        new = apply_blocks(cur, blocks)
-        if new == cur:
-            continue
-        if a.update_readme:
-            with open(path, 'w') as f:
-                f.write(new)
-            print(f'progress: {name} updated')
-        else:
-            stale.append(name)
-    if stale:
-        print(f"progress: generated block stale in {', '.join(stale)}; run tools/progress.py --update-readme",
-              file=sys.stderr)
-        return 1
+    if a.check_touched is not None:
+        refs = a.check_touched or default_refs(git_repo_for(a.root))
+        stale = stale_outputs(a.root, data, refs)
+        if stale:
+            print(f"progress: generated text changed by hand or left stale in {', '.join(stale)}: leave it "
+                  "as main has it (tools/remerge.py restores it; tools/progress_pr.py regenerates it on main) "
+                  "or run tools/progress.py --update-readme", file=sys.stderr)
+            return 1
+        return 0
+    if a.check:
+        stale = stale_outputs(a.root, data)
+        if stale:
+            print(f"progress: generated block stale in {', '.join(stale)}; run tools/progress_pr.py "
+                  "(or tools/progress.py --update-readme)", file=sys.stderr)
+            return 1
+        return 0
+    if not a.out:
+        sys.stdout.write(js)
     return 0
 
 

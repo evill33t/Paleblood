@@ -36,6 +36,9 @@ IMAGE = 0x800000000         # host address of guest offset 0, as in the scaffold
 EBOOT_BASE = 0x400000       # PS4 virtual address of guest offset 0
 SANDBOX = 0x900000000       # case buffers
 SANDBOX_SIZE = 16 << 20
+# The runtime's guest mapping window (runtime/syslib/kernel_memory.c, MAP_WINDOW_START/END): a
+# buffer recorded there may be put back at its origin.
+GUEST_WINDOW = (0x2000000000, 0xe000000000)
 DATA = 0x910000000          # data imports, one page each
 CODE = 0x920000000          # trampoline and import stubs
 PAGE = 4096
@@ -48,14 +51,23 @@ MAP_PRIVATE, MAP_ANONYMOUS, MAP_FIXED_NOREPLACE = 0x02, 0x20, 0x100000
 
 # call_capture(block): see docs/VERIFY.md. Block layout: 0 target, 8..48 rdi..r9, 56 rax,
 # 64 rdx, 72 xmm0, 88 xmm1, 104 rbx, 112 rbp, 120 r12, 128 r13, 136 r14, 144 r15,
-# 152 rsp before the call, 160 rsp after it. Callee-saved registers hold sentinels. xmm0 and
-# xmm1 are loaded from their slots before the call (float arguments) and stored back after it.
+# 152 rsp before the call, 160 rsp after it, 168..216 rdi, rsi, rcx, r8, r9, r10, r11 after it,
+# 224..304 xmm2..xmm7. Callee-saved registers hold sentinels. xmm0 and xmm1 are loaded from
+# their slots before the call (float arguments) and stored back after it; xmm2..xmm7 are only
+# loaded (the third to eighth float arguments; zero unless a case gives them).
+# The rax slot also supplies an optional incoming machine-register value; it defaults to zero.
+XMM_ARGS = {'xmm0': 72, 'xmm1': 88, **{f'xmm{n}': 224 + 16 * (n - 2) for n in range(2, 8)}}
+BLOCK_QWORDS = 40
+_LOAD_XMM1 = bytes.fromhex('f3410f6f4b58')                      # movdqu xmm1, [r11+0x58]
 TRAMPOLINE = bytes.fromhex(
     '53554154415541564157574989fb48bb111111111111111148bd222222222222222249bc3333333333333333'
     '49bd444444444444444449be555555555555555549bf66666666666666664989a398000000498b7b08498b73'
     '10498b5318498b4b204d8b43284d8b4b304d8b13f3410f6f4348f3410f6f4b5831c041ffd24c8b1c24498943'
     '3849895340f3410f7f4348f3410f7f4b5849895b6849896b704d8963784d89ab800000004d89b3880000004d'
-    '89bb900000004989a3a00000005f415f415e415d415c5d5bc3')
+    '89bb900000004989a3a00000005f415f415e415d415c5d5bc3').replace(
+    _LOAD_XMM1, _LOAD_XMM1 + b''.join(                         # movdqu xmmN, [r11+disp32]
+        bytes([0xf3, 0x41, 0x0f, 0x6f, 0x83 | n << 3]) + struct.pack('<i', XMM_ARGS[f'xmm{n}'])
+        for n in range(2, 8)))
 SENTINELS = {'rbx': 0x1111111111111111, 'rbp': 0x2222222222222222, 'r12': 0x3333333333333333,
              'r13': 0x4444444444444444, 'r14': 0x5555555555555555, 'r15': 0x6666666666666666}
 ARG_REGS = ('rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9')
@@ -75,7 +87,10 @@ def _stack_trampoline(base: bytes) -> bytes:
     code += bytes.fromhex('488b05') + rel(len(code) + 7, 0)        # mov rax, [count]
     code += bytes.fromhex('4c8b1d') + rel(len(code) + 7, 8)        # mov r11, [pointer]
     code += bytes.fromhex('4885c0' '7409' '48ffc8' '41ff34c3' 'ebf2')   # push [r11+8*rax], rax..1
-    code += call
+    # Stack setup uses rax and r11 as scratch. Recover the block pointer saved below the
+    # pushed arguments, then load the requested entry rax without disturbing GP arguments.
+    code += bytes.fromhex('4c8b1d') + rel(len(code) + 7, 16)         # mov r11, [stack bytes]
+    code += bytes.fromhex('4e8b1c1c498b433841ffd2')                  # block=[rsp+r11]; rax=block[7]; call r10
     code += bytes.fromhex('480325') + rel(len(code) + 7, 16)       # add rsp, [bytes]
     suffix = base[at + len(call):]
     restore_block = bytes.fromhex('4c8b1c24')
@@ -124,6 +139,18 @@ libc.mmap.restype = ctypes.c_void_p
 libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
 libc.mprotect.restype = ctypes.c_int
 libc.mprotect.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+libc.munmap.restype = ctypes.c_int
+libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+
+
+def map_page(address: int) -> bool:
+    """Maps one page at `address` when nothing is there yet; whether it did."""
+    got = libc.mmap(address, PAGE, PROT_RWX, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0)
+    if got == address:
+        return True
+    if got not in (None, ctypes.c_void_p(-1).value):
+        libc.munmap(got, PAGE)              # an old kernel ignoring NOREPLACE mapped it elsewhere
+    return False
 
 
 def mmap_fixed(address: int, size: int) -> None:
@@ -243,7 +270,7 @@ class Run:
         self.boot, self.case = boot, case
         self.calls: list[dict] = []
         self.errors: list[str] = []
-        self.block = (ctypes.c_uint64 * 28)()
+        self.block = (ctypes.c_uint64 * BLOCK_QWORDS)()
         for field in ('imports', 'stubs'):
             entries = case.get(field, [])
             if not isinstance(entries, list):
@@ -267,6 +294,51 @@ class Run:
             self.stub_scripts.setdefault(hexint(entry['address']), []).append(entry)
 
     # memory layout ---------------------------------------------------------------------
+    def origin_layout(self) -> dict[str, tuple[int, int]]:
+        """Buffers placed where they lay in the recorded run (their `origin`), as name -> (start,
+        end of their redzone). Code may depend on where its memory lies, not only on what it
+        holds: a heap block's size is the distance to the next block, which can be another
+        buffer, and a heap checks a block against its own recorded bounds. A buffer goes back to
+        its origin when that lies in the runtime's guest mapping window and its pages are free in
+        this process; otherwise it goes to the sandbox, as a case without origins does. Pages two
+        buffers share are mapped once; the page after each run of pages is a guard page when free."""
+        buffers = self.case.get('buffers', {})
+        wanted = []
+        for name in sorted(buffers):
+            spec = buffers[name]
+            if 'origin' not in spec:
+                continue
+            try:
+                start, size = int(str(spec['origin']), 16), int(spec['size'])
+            except ValueError as error:
+                raise BadInput(f'buffer {name}: origin is not a hex address') from error
+            if size >= 0 and GUEST_WINDOW[0] <= start and start + max(size, 1) <= GUEST_WINDOW[1]:
+                wanted.append((start, size, name))
+        wanted.sort()
+        for (a, sa, na), (b, _, nb) in zip(wanted, wanted[1:]):
+            if a + sa > b:
+                raise BadInput(f'buffers {na} and {nb} overlap at their origins')
+        mapped: set[int] = set()
+        placed: dict[str, tuple[int, int]] = {}
+        for i, (start, size, name) in enumerate(wanted):
+            first, last = start // PAGE * PAGE, (start + max(size, 1) + PAGE - 1) // PAGE * PAGE
+            pages = [p for p in range(first, last, PAGE) if p not in mapped]
+            if not all(map_page(p) for p in pages):
+                continue                            # taken in this process: the sandbox instead
+            mapped.update(pages)
+            following = wanted[i + 1][0] if i + 1 < len(wanted) else None
+            placed[name] = (start, min(last, following) if following is not None else last)
+            if (following is None or following >= last + PAGE) and last not in mapped and map_page(last):
+                libc.mprotect(last, PAGE, PROT_NONE)
+                mapped.add(last)
+        return placed
+
+    def add_redzone(self, name: str, start: int, end: int) -> None:
+        if end > start:
+            redzone = bytes((0xA5 ^ ((i * 29 + len(name)) & 0xff)) for i in range(end - start))
+            ctypes.memmove(start, redzone, len(redzone))
+            self.redzones.append((start, redzone, name))
+
     def setup(self, machine: 'Machine') -> None:
         """Lay out this case on a mapped machine: buffers, stubs, memory presets."""
         machine.current = self
@@ -278,7 +350,7 @@ class Run:
             args = {int(e['series']['arg']) for e in entries if 'series' in e}
             # The compressed path cannot observe per-call selectors or stack values.
             simple = all(required_arguments(e) <= 6 and
-                         not any(e.get(field) for field in ('argi', 'argmem', 'argf32', 'writes'))
+                         not any(e.get(field) for field in ('argi', 'argu8', 'argu32', 'argmem', 'argf32', 'writes'))
                          for e in entries if 'series' in e)
             if simple and args and args <= {0, 1} and len(args) == 1:
                 series_imports.append((i, args.pop()))
@@ -297,6 +369,7 @@ class Run:
         if len(self.stub_scripts) > STUB_SLOTS:
             raise BadInput(f'more than {STUB_SLOTS} stubbed functions')
         off = 0
+        origins = self.origin_layout()
         for name in sorted(self.case.get('buffers', {})):
             spec = self.case['buffers'][name]
             size = int(spec['size'])
@@ -305,16 +378,17 @@ class Run:
             data = bytes.fromhex(spec.get('bytes', ''))
             if len(data) > size:
                 raise BadInput(f'buffer {name}: more bytes than its size')
+            if name in origins:
+                start, redzone_end = origins[name]
+                self.buffers[name] = (start, size)
+                ctypes.memmove(start, data + bytes(size - len(data)), size)
+                self.add_redzone(name, start + size, redzone_end)
+                continue
             start = SANDBOX + off
             self.buffers[name] = (start, size)
             ctypes.memmove(start, data + bytes(size - len(data)), size)
             payload_pages = max(1, (size + PAGE - 1) // PAGE)
-            redzone_start = start + size
-            redzone_end = start + payload_pages * PAGE
-            if redzone_end > redzone_start:
-                redzone = bytes((0xA5 ^ ((i * 29 + len(name)) & 0xff)) for i in range(redzone_end - redzone_start))
-                ctypes.memmove(redzone_start, redzone, len(redzone))
-                self.redzones.append((redzone_start, redzone, name))
+            self.add_redzone(name, start + size, start + payload_pages * PAGE)
             guard = start + payload_pages * PAGE
             if off + (payload_pages + 1) * PAGE > SANDBOX_SIZE:
                 raise BadInput('buffers and guard pages exceed the sandbox')
@@ -336,8 +410,7 @@ class Run:
             if libc.syscall(SYS_ARCH_PRCTL, ARCH_SET_GS, ctypes.c_ulong(self.value(self.case['gs']))):
                 raise BadInput(f'arch_prctl(ARCH_SET_GS) failed: errno {ctypes.get_errno()}')
         for m in self.case.get('memory', []):
-            target = m['addr']
-            addr = self.value(target) if isinstance(target, str) and target.startswith('buf:') else self.guest(hexint(target))
+            addr = self.location(m['addr'])
             if 'pointer' in m:
                 data = struct.pack('<Q', self.value(f"buf:{m['pointer']}"))
             elif 'guest' in m:
@@ -346,6 +419,10 @@ class Run:
                 data = bytes.fromhex(m['bytes'])
             self.check_memory(addr, len(data), write=True, source="fixture_setup")
             ctypes.memmove(addr, data, len(data))
+
+    def location(self, target) -> int:
+        """A `memory` or write address: buf:NAME+off, or a PS4 address in the image."""
+        return self.value(target) if isinstance(target, str) and target.startswith('buf:') else self.guest(hexint(target))
 
     def guest(self, ps4: int) -> int:
         if not EBOOT_BASE <= ps4 < EBOOT_BASE + self.boot['size']:
@@ -431,6 +508,9 @@ class Run:
     def call_record(self, entry: dict, args: tuple, save: int, identity: dict) -> dict:
         picks = entry.get('argi', list(range(entry.get('argc', 0))))
         record = {**identity, 'args': [self.describe(args[i]) for i in picks]}
+        for field, mask in (('argu8', 0xff), ('argu32', 0xffffffff)):
+            for index in entry.get(field, []):
+                record.setdefault(field, []).append(f'0x{args[index] & mask:x}')
         for register in entry.get('argf32', []):
             record.setdefault('argf32', []).append(ctypes.string_at(save + 16 * register, 4).hex())
         for item in entry.get('argmem', []):
@@ -483,7 +563,7 @@ class Run:
             pack = lambda v: struct.pack('<qq', int(v) // 1_000_000, int(v) % 1_000_000)
             self.check_memory(args[int(series['arg'])], 16, write=True, source="import_series")
             ctypes.memmove(args[int(series['arg'])], pack(series['values'][i]), 16)
-            ret = hexint(entry.get('ret', 0)) & 0xffffffffffffffff
+            ret = self.value(entry.get('ret', 0)) & 0xffffffffffffffff
             n = self.native.get(index)
             rest = series['values'][i + 1:]
             if n and rest:
@@ -500,10 +580,11 @@ class Run:
             data = bytes.fromhex(w['bytes'])
             if 'size' in w and len(data) != int(w['size']):
                 self.errors.append(f"{entry['name']}: write of {len(data)} bytes, the case says {w['size']}")
-            address = args[int(w['arg'])] + int(w.get('offset', 0))
+            # At a fixed place (a buffer or the image), or through an argument register.
+            address = self.location(w['addr']) if 'addr' in w else args[int(w['arg'])] + int(w.get('offset', 0))
             self.check_memory(address, len(data), write=True, source="import_write")
             ctypes.memmove(address, data, len(data))
-        return hexint(entry.get('ret', 0)) & 0xffffffffffffffff
+        return self.value(entry.get('ret', 0)) & 0xffffffffffffffff
 
     def dispatch_stub(self, address: int, args: tuple, save: int = 0) -> int:
         queue = self.stub_scripts.get(address)
@@ -540,7 +621,7 @@ class Run:
 
     def run(self, target: int) -> dict:
         args = self.case.get('args', {})
-        unknown = set(args) - set(ARG_REGS) - {'xmm0', 'xmm1'}
+        unknown = set(args) - set(ARG_REGS) - {'rax'} - set(XMM_ARGS)
         if unknown:
             raise BadInput(f'unknown argument registers {sorted(unknown)}')
         observed = self.case.get('observe_registers', [])
@@ -556,7 +637,8 @@ class Run:
         self.block[0] = target
         for i, reg in enumerate(ARG_REGS):
             self.block[1 + i] = self.value(args.get(reg, 0))
-        for reg, off in (('xmm0', 72), ('xmm1', 88)):
+        self.block[7] = self.value(args.get('rax', 0))
+        for reg, off in XMM_ARGS.items():
             raw = bytes.fromhex(args.get(reg, '')).ljust(16, b'\0')[:16]
             ctypes.memmove(ctypes.addressof(self.block) + off, raw, 16)
         before = self.snapshot()
@@ -626,20 +708,30 @@ class Run:
         return out
 
 
-def load_replacement(lib_path: str, symbol: str, size: int) -> int:
-    """dlopen the game library, run its bbgame_init with a loader that installs no hooks, and
-    return the address of SYMBOL."""
-    lib = ctypes.CDLL(lib_path)
-    hook = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p)(lambda o, s, t: 0)
-    load_replacement.keep = (lib, hook)
+_initialized: dict[str, ctypes.CDLL] = {}
+_keep_alive: list = []
 
-    class Host(ctypes.Structure):
-        _fields_ = [('version', ctypes.c_uint32), ('image', ctypes.c_void_p),
-                    ('image_size', ctypes.c_uint64), ('install_hook', ctypes.c_void_p)]
-    host = Host(1, IMAGE, size, ctypes.cast(hook, ctypes.c_void_p).value)
-    if lib.bbgame_init(ctypes.byref(host)):
-        raise BadInput('bbgame_init failed')
-    return ctypes.cast(getattr(lib, symbol), ctypes.c_void_p).value
+
+def load_replacement(lib_path: str, symbol: str, size: int) -> int:
+    """dlopen the game library, run its bbgame_init (once per library) with a loader that
+    installs no hooks, and return the address of SYMBOL."""
+    lib = _initialized.get(lib_path)
+    if lib is None:
+        lib = ctypes.CDLL(lib_path)
+        hook = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p)(lambda o, s, t: 0)
+        _keep_alive.append(hook)
+
+        class Host(ctypes.Structure):
+            _fields_ = [('version', ctypes.c_uint32), ('image', ctypes.c_void_p),
+                        ('image_size', ctypes.c_uint64), ('install_hook', ctypes.c_void_p)]
+        host = Host(1, IMAGE, size, ctypes.cast(hook, ctypes.c_void_p).value)
+        if lib.bbgame_init(ctypes.byref(host)):
+            raise BadInput('bbgame_init failed')
+        _initialized[lib_path] = lib
+    try:
+        return ctypes.cast(getattr(lib, symbol), ctypes.c_void_p).value
+    except AttributeError as error:
+        raise BadInput(f'{symbol} is not exported by {os.path.basename(lib_path)}') from error
 
 
 def run_case(machine: Machine, case: dict, address: str, target: int | None) -> dict:
@@ -749,13 +841,37 @@ def batch(machine: Machine, cases_dir: str, address: str, target: int | None, ti
     return out
 
 
+def run_plan(machine: Machine, plan: list, image_size: int, timeout: int) -> dict:
+    """Every entry of a family plan (docs/FAMILIES.md), each in a fork of the one mapped machine:
+    {"key", "address", "case", and for a replacement "replacement" and "lib"}. Libraries are
+    loaded once each. Returns {key: result}."""
+    targets: dict[tuple[str, str], int] = {}
+    out = {}
+    for entry in plan:
+        key, address, case = entry['key'], entry['address'], entry['case']
+        target = None
+        if entry.get('replacement'):
+            lib, symbol = entry['lib'], entry['replacement']
+            if (lib, symbol) not in targets:
+                targets[(lib, symbol)] = load_replacement(lib, symbol, image_size)
+            target = targets[(lib, symbol)]
+        try:
+            out[key] = _run_isolated(machine, case, address, target, timeout, False, 0, None)
+        except BadInput as error:
+            raise BadInput(f'{key}: {error}') from error
+        out[key]['id'] = case.get('id', key)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--elf', required=True, help='the executable (eboot.elf)')
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument('--case', help='one case file; prints its result')
     g.add_argument('--cases', help='a directory of case files; prints {file stem: result}')
-    ap.add_argument('--address', required=True)
+    g.add_argument('--plan', help='a family plan (JSON list of entries, each with its own address, case and '
+                   'replacement); prints {key: result}')
+    ap.add_argument('--address')
     ap.add_argument('--replacement')
     ap.add_argument('--lib')
     ap.add_argument('--timeout', type=int, default=20, help='per case, batch mode')
@@ -784,6 +900,14 @@ def main() -> int:
                 if not EBOOT_BASE <= addr < EBOOT_BASE + boot['size'] - len(data):
                     raise BadInput(f'patch line at 0x{addr:08x} is outside the image')
                 ctypes.memmove(IMAGE + addr - EBOOT_BASE, data, len(data))
+        if a.plan:
+            with open(a.plan) as f:
+                result = run_plan(machine, json.load(f), boot['size'], a.timeout)
+            json.dump(result, sys.stdout, sort_keys=True)
+            print()
+            return 0
+        if not a.address:
+            raise BadInput('--address is required with --case or --cases')
         target = None
         if a.replacement:
             if not a.lib:

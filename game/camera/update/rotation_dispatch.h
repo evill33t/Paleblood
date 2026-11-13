@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera rotation dispatch stage, included only by update.cpp.
 #pragma once
-#include "../../engine/camera_update/math.h"
-// Exits to free-input preparation atcab9 or angle-frame construction atcf2e.
-// Rotation release, complete locked adjustment, and the reached target-pitch tail only.
+#include "math.h"
+// Release rotation control, apply lock adjustment, then select free input or
+// angle-frame construction.
 #include "front_chase.h"
 
 namespace camera::update::rotation_dispatch
 {
-namespace scalar = engine::camera_control_math;
-namespace arithmetic = engine::camera_target_math;
-namespace front_math = engine::camera_front_chase_math;
-namespace rotation_math = engine::camera_rotation_dispatch_math;
+namespace scalar = camera::update::math;
+namespace arithmetic = camera::update::math;
+namespace front_math = camera::update::math;
+namespace rotation_math = camera::update::math;
 using update::angular_mode::AngularPreparation;
 using update::control::ControlPreparation;
 using update::subject::SubjectCompensationState;
@@ -33,14 +33,14 @@ static_assert(offsetof(FollowCamera, lock_adjustment_chase_rate) == 0x288);
 
 enum class RotationContinuation : uint8_t
 {
-    free_input,  // original0x0183cab9: its hand-input/geometry/high-speed stage starts next
-    angle_frame, // original0x0183cf2e: the original begins pitch sine/cosine construction
+    free_input,  // Apply hand input and high-speed rotation.
+    angle_frame, // Construct the camera orientation from its angles.
 };
 
 struct RotationDispatch
 {
     RotationContinuation continuation;
-    // Original R14B captured atc99e. A future free-input atan2 callback may change guest260;
+    // The free-input atan2 callback can change lock_requested after this snapshot;
     // the shared tail still tests this captured byte, rather than reloading that field.
     uint8_t captured_lock;
 };
@@ -52,90 +52,90 @@ static_assert(offsetof(SubjectCompensationState, saved_time_register) == 0);
 
 inline void release_rotation_control(FollowCamera &state, float delta_time)
 {
-    const float old_wait = scalar::capture(state.rotation_control_wait_remaining);
+    const float old_wait = state.rotation_control_wait_remaining;
     const float difference = scalar::subtract(old_wait, delta_time);
     const float remaining = rotation_math::maximum(0.0f, difference);
-    scalar::publish(state.rotation_control_wait_remaining, remaining);
-    // Original JB skips positive AND unordered; ordered0>=remaining continues.
+    state.rotation_control_wait_remaining = remaining;
+    // Only an expired, ordered wait releases the rate; a NaN wait is retained.
     if (front_math::ordered_at_least(0.0f, remaining))
     {
-        // Original DIV reads release time before the current rate load.
-        const float release_time = scalar::capture(state.rotation_control_end_release_time);
+        // Read the release duration before the rate being reduced.
+        const float release_time = state.rotation_control_end_release_time;
         const float step = scalar::divide(delta_time, release_time);
-        const float old_rate = scalar::capture(state.rotation_control_rate);
+        const float old_rate = state.rotation_control_rate;
         const float rate = scalar::subtract(old_rate, step);
-        scalar::publish(state.rotation_control_rate, rate);
+        state.rotation_control_rate = rate;
         if (!scalar::unordered_or_less_equal(0.0f, rate))
         {
-            scalar::publish(state.rotation_control_rate, 0.0f);
+            state.rotation_control_rate = 0.0f;
         }
     }
 }
 
 inline void apply_locked_adjustment(FollowCamera &state, Vec4 control_input)
 {
-    const float maximum_pitch = scalar::capture(state.maximum_lock_adjustment.pitch);
+    const float maximum_pitch = state.maximum_lock_adjustment.pitch;
     const float target_pitch = scalar::multiply(control_input.x(), maximum_pitch);
-    const float old_pitch_adjustment = scalar::capture(state.lock_adjustment.pitch);
-    const float rate = scalar::capture(state.lock_adjustment_chase_rate);
+    const float old_pitch_adjustment = state.lock_adjustment.pitch;
+    const float rate = state.lock_adjustment_chase_rate;
     const float pitch_difference = scalar::subtract(target_pitch, old_pitch_adjustment);
     const float pitch_step = scalar::multiply(pitch_difference, rate);
     const float pitch_adjustment = arithmetic::add(old_pitch_adjustment, pitch_step);
-    scalar::publish(state.lock_adjustment.pitch, pitch_adjustment);
+    state.lock_adjustment.pitch = pitch_adjustment;
 
-    const float maximum_yaw = scalar::capture(state.maximum_lock_adjustment.yaw);
+    const float maximum_yaw = state.maximum_lock_adjustment.yaw;
     const float target_yaw = scalar::multiply(control_input.y(), maximum_yaw);
-    const float old_yaw_adjustment = scalar::capture(state.lock_adjustment.yaw);
+    const float old_yaw_adjustment = state.lock_adjustment.yaw;
     const float yaw_difference = scalar::subtract(target_yaw, old_yaw_adjustment);
     const float yaw_step = scalar::multiply(yaw_difference, rate);
     const float yaw_adjustment = arithmetic::add(old_yaw_adjustment, yaw_step);
-    scalar::publish(state.lock_adjustment.yaw, yaw_adjustment);
+    state.lock_adjustment.yaw = yaw_adjustment;
 
-    // Both adjustment publications precede current pitch's read. Adjustment is source1.
-    const float current_pitch = scalar::capture(state.angles.pitch);
+    // Publish both adjustments before reading pitch, preserving the NaN operand order.
+    const float current_pitch = state.angles.pitch;
     const float pitch_candidate = arithmetic::add(pitch_adjustment, current_pitch);
-    const float period = scalar::capture(update::locked_geometry::two_pi.get());
-    scalar::publish(state.angles.pitch, wrap_angle(pitch_candidate, period));
+    const float period = update::locked_geometry::two_pi.get();
+    state.angles.pitch = wrap_angle(pitch_candidate, period);
     // Current yaw is read only after chased pitch's publication.
-    const float current_yaw = scalar::capture(state.angles.yaw);
+    const float current_yaw = state.angles.yaw;
     const float yaw_candidate = arithmetic::add(yaw_adjustment, current_yaw);
-    scalar::publish(state.angles.yaw, wrap_angle(yaw_candidate, period));
+    state.angles.yaw = wrap_angle(yaw_candidate, period);
 }
 
-// Original shared ce97..cf2d. Future free-input reconstruction should invoke this same tail
-// after its own effects/callbacks, with R14B captured atc99e and a late guest263 read.
+// Both rotation paths finish here after their callbacks, using the earlier lock
+// snapshot and a fresh read of front_lock_active.
 inline void finish_rotation_input(FollowCamera &state, uint8_t captured_lock)
 {
     if (captured_lock != 0) return;
-    if (scalar::capture(state.front_lock_active) != 0) return;
-    const float current_pitch = scalar::capture(state.angles.pitch);
-    const float target_pitch = scalar::capture(state.target_pitch);
+    if (state.front_lock_active != 0) return;
+    const float current_pitch = state.angles.pitch;
+    const float target_pitch = state.target_pitch;
     const float difference = scalar::subtract(current_pitch, target_pitch);
-    const float period = scalar::capture(update::locked_geometry::two_pi.get());
+    const float period = update::locked_geometry::two_pi.get();
     const float delta = wrap_angle(difference, period);
-    // This field is read after the first wrap; original keeps target_pitch across it.
+    // Read the chase rate after wrapping while retaining the captured target pitch.
     const float rate =
-        engine::camera_frame_policy::complement_gain(scalar::capture(state.target_pitch_chase_rate));
+        camera::update::frame_policy::complement_gain(state.target_pitch_chase_rate);
     const float movement = scalar::multiply(delta, rate);
     const float candidate = arithmetic::add(target_pitch, movement);
-    scalar::publish(state.angles.pitch, wrap_angle(candidate, period));
+    state.angles.pitch = wrap_angle(candidate, period);
 }
 
 RotationDispatch prepare_rotation_input(FollowCamera &state, const AngularPreparation &angular,
                                         const TargetPreparation &target, const ControlPreparation &control,
                                         const SubjectCompensationState &previous)
 {
-    // Preserve full saved time and all other outer stage carriers; only its low lane is used.
+    // Rotation release uses the delta-time lane of the saved time input.
     release_rotation_control(state, previous.saved_time_register.x());
-    const uint8_t captured_lock = scalar::capture(state.lock_requested);
+    const uint8_t captured_lock = state.lock_requested;
     if (target.reset_requested == 0)
     {
         if (captured_lock == 0)
         {
-            // Original cab1 consumes the carried AL; do not reload guest263 to choose this.
+            // Use the earlier front-lock decision even if a callback changed the field.
             if (angular.front_active == 0) return {RotationContinuation::free_input, captured_lock};
         }
-        else if (scalar::capture(state.adjust_lock_camera) != 0 && angular.front_active == 0)
+        else if (state.adjust_lock_camera != 0 && angular.front_active == 0)
         {
             apply_locked_adjustment(state, control.control_input);
         }

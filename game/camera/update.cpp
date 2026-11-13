@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Advances subject-relative camera, input, wall avoidance and territory constraints.
-// The hidden vector wire body preserves opaque physical time bits across the scalar entry.
+// The public scalar entry also supplies live upper XMM0 lanes used by the update.
 #include "update.h"
-#include "../engine/camera_update/math.h"
-#include "../engine/camera_update/carrier_lifetime.h"
-#include "../engine/camera_update/scalar_entry.h"
+#include "update/math.h"
 #include "update/parameter.h"
 #include "update/free_input.h"
 #include "update/angle_frame.h"
@@ -44,18 +42,14 @@ camera_update_follow_body(camera::FollowCamera *state, camera::Subject *subject,
     }
     const auto frame = camera::update::angle_frame::prepare_angle_frame(*state);
     const camera::update::translation_compensation::TranslationCompensationInput translation_input{
-        frame.fulcrum, frame.half, frame.three, previous.subject_position, previous.camera_basis.axis_x};
+        frame.fulcrum, previous.subject_position, previous.camera_basis.axis_x};
     const auto translation =
         camera::update::translation_compensation::compensate_translation(*state, translation_input);
-    camera::update::candidate_collision::prepare_candidate_collision(*state, queries, translation.fulcrum,
-                                                                     translation.half, translation.three);
-    const auto wing =
-        camera::update::wing_escape::prepare_wing_escape(*state, queries, previous.saved_time_register);
-    const auto chase = camera::update::chase::chase_camera_candidate(*state, wing.half, wing.three);
+    camera::update::candidate_collision::prepare_candidate_collision(*state, queries, translation.fulcrum);
+    camera::update::wing_escape::prepare_wing_escape(*state, queries, previous.saved_time_register);
+    const auto chase = camera::update::chase::chase_camera_candidate(*state);
     const camera::update::orientation::OrientationPreparation orientation_input{chase.candidate,
                                                                                 chase.cast_origin,
-                                                                                chase.half,
-                                                                                chase.three,
                                                                                 previous.camera_basis.axis_x,
                                                                                 previous.camera_basis.axis_y,
                                                                                 previous.camera_basis.forward,
@@ -76,13 +70,10 @@ camera_update_follow_body(camera::FollowCamera *state, camera::Subject *subject,
     const auto validation = camera::update::validation_margin::validate_camera(*state, rollback);
     const auto territory = camera::update::territory::avoid_territories(*state, queries, validation);
     camera::update::validation_margin::apply_safe_margin(*state, territory);
-    engine::camera_observation::retain(previous, control, fresh, target, angular, rotation, frame,
-                                       translation, wing, chase, orientation_input, validation, territory,
-                                       rollback);
 }
 
-extern "C" ENGINE_CAMERA_SCALAR_ENTRY_ATTRIBUTES void
+extern "C" void
 bb_camera_update_follow(camera::FollowCamera *, camera::Subject *, camera::QueryWorld *, float)
 {
-    ENGINE_CAMERA_FORWARD_SCALAR_TIME(camera_update_follow_body);
+    CAMERA_UPDATE_FORWARD_SCALAR_TIME(camera_update_follow_body);
 }

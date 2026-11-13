@@ -6,7 +6,7 @@
 #include <cstring>
 
 #include "../../ai/hk_ai.h"
-#include "../follow_camera.h"
+#include "../follow_camera_state.h"
 
 namespace camera::query_calls
 {
@@ -26,7 +26,7 @@ static_assert(sizeof(Vec4) == 0x10 && alignof(Vec4) == 0x10);
 // The original writes ESI=0xffffffff, which defines RSI=0x00000000ffffffff.
 // The original parameter's C++ signedness/width cannot be recovered from that write alone.
 // A uint64_t wire argument preserves the complete observed register value without assuming
-// that the unknown target ignores its upper half. Do not pass signed int64_t(-1).
+// that the unknown target ignores its upper 32 bits. Do not pass signed int64_t(-1).
 using DebugStateSlotCall = void (*)(ai::DebugRenderState *, uint64_t register_value);
 inline constexpr size_t known_debug_slot_index = 5;
 struct DebugStateVTable

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // The original clears opaque bytes adjacent to escape yaw in one qword store.
 #pragma once
-#include "../follow_camera.h"
+#include "../follow_camera_state.h"
 namespace camera::update
 {
 struct EscapeYawStorage
@@ -21,7 +21,7 @@ static_assert(offsetof(EscapeYawView, escape) + offsetof(EscapeYawStorage, yaw) 
 static_assert(offsetof(FollowCamera, unknown_0x28d) == 0x28d);
 static_assert(offsetof(FollowCamera, unknown_0x28d) + sizeof(FollowCamera::unknown_0x28d) ==
               offsetof(FollowCamera, escape_wall_yaw));
-// The view supplies an asm memory operand only; it never loads opaque bytes as a C++ value.
+// The view names adjacent opaque bytes and yaw for a bytewise clear; no C++ value is loaded.
 inline EscapeYawStorage &escape_yaw_storage(FollowCamera &state)
 {
     return reinterpret_cast<EscapeYawView &>(state).escape;

@@ -2,7 +2,7 @@
 
 Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as `scePthreadAttrGetaffinity` (libkernel, called by libc.elf), with 252 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 18133 of 157757 functions are verified (11.49%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
 <!-- status:end -->
 
 The goal is a complete source port: every function rewritten and proved, running on our own
@@ -70,18 +70,28 @@ implementing it. Claim one function or a tightly related group in issue #34 befo
 maintainers can avoid duplicate work. Use a branch named `runtime/<function>`; for a group, use
 the lead function's name.
 
-Implement the call in `runtime/syslib/<group>.c` and register it with `RT_SYSLIB`. Add or update
-the applicable cases in `test/test_syslib.c`. Unknown target behavior must stay explicit and fail
+Implement the call in `runtime/syslib/<group>.c` and register it with `RT_SYSLIB`. Put its tests
+in their own file, `test/syslib/<group>.c`, as `SYSLIB_TEST(name) { ... }` blocks
+(`test/syslib_test.h`; `test/syslib/np_trophy.c` is an example), so parallel pull requests do not
+edit the same lines; cases that already live in `test/test_syslib.c` may be updated there. To bring a
+branch up to date, merge `origin/main` into it: the push gate checks only commits main does not
+have. Unknown target behavior must stay explicit and fail
 loudly; do not choose guessed return values just to advance `tools/boot.py`.
 
 Runtime code is clean-room: use public API documentation, independent reverse engineering, and
-observed behavior as facts. Do not copy, adapt, or model implementation code from another PS4
-runtime or emulator. Keep one call or a
+observed behavior as facts. Independent reverse engineering includes the system libraries of your
+own console's firmware (for example libkernel or libSceVideoOut): name each one by its SHA-256 in
+the runtime report, take facts from it (shapes, checks, values, order), and write your own code.
+Never copy its code, and never attach or link the files. Do not copy, adapt, or model
+implementation code from another PS4 runtime or emulator. Keep one call or a
 tightly related group in each PR. Runtime-only PRs need no proprietary game dump, captures, or
 function-level `verify.py` results. CI compiles with GCC and Clang, runs the RT_SYSLIB test and
-the rest of CTest, and retains the repository's policy checks. It also builds and tests your PR
-merged with each other open PR that is ready for review (`tools/combined_check.py`), so two PRs
-that pass alone but break together are found before either is queued. CI selects the concise runtime
+the rest of CTest, and retains the repository's policy checks. An advisory `combined` workflow
+(not a required check, never run by the merge queue) also builds and tests your PR merged with up
+to four other open PRs that are ready for review and change the same files or directories
+(`tools/combined_check.py --overlap --max-pairs 4`), so two PRs that pass alone but break together
+are usually found before either is queued; the merge queue still tests the real combination. A new
+push cancels the previous `combined` run, and draft PRs are checked when marked ready. CI selects the concise runtime
 report from changed files, not a manually applied label. Include sources, confirmed behavior,
 unresolved questions, tests, and the clean-room basis in that report.
 
@@ -114,7 +124,11 @@ Systems that lack documentation get a **Document a system** issue first: its pag
 Forks of a public repository are public. Everything you push there, including branches you
 never open a pull request for, is visible to anyone: never push game files, dumps, decompiler
 projects or raw decompiler output, not even temporarily. Keep your dump, your Ghidra project,
-drafts and captures outside the repository (the tools default to `../data`, next to your clone).
+drafts and captures outside the repository. The tools read your dump from `../data` (next to your
+clone, `$BB_DATA_ROOT`) and never write there: drafts go to `$BB_DRAFTS` (default
+`~/.cache/paleblood/drafts`) and the Ghidra project lives at `$BB_GHIDRA_PROJECT` (default
+`~/.local/share/paleblood/ghidra/run1-classes`), because Ghidra writes lock files into a project
+it opens.
 
 ## Pull request contents
 
@@ -146,7 +160,33 @@ A function's status in `symbols/functions.csv` goes through three levels:
 Chalice Dungeon state, say, without a save that gets there). You don't upgrade it by hand:
 `tools/promote.py` (run by `tools/end_session.sh`) re-runs every `edge-verified` function once
 recordings for it exist in your capture library, and marks it `verified` only if every recorded
-and edge case passes. A failure leaves it where it was and is reported.
+and edge case passes. A failure leaves it where it was and is reported. The runtime records those
+inputs itself: `tools/capture_loop.py` boots every scene it reaches with recording on, then runs
+`tools/promote.py` and lists the functions that pass and await their independent review
+([docs/VERIFY.md](docs/VERIFY.md), "Recording in the game").
+
+### Generated progress and merging main
+
+Several pull requests land in the merge queue at once, so a pull request must not rewrite text
+that every other one rewrites too:
+
+- **Generated progress.** Leave the progress and status blocks in `README.md`, `STATUS.md` and
+  this file, and the status card (`docs/assets/status-light.svg`, `docs/assets/status-dark.svg`),
+  as main has them. Main is regenerated by one pull request on the branch
+  `auto/regenerate-progress`: after a merge, run `tools/progress_pr.py`, which opens or updates it
+  and queues it (`.github/workflows/progress.yml` fails while main is behind). CI, the hooks and
+  the push gate refuse generated text that a branch changes by hand or leaves stale
+  (`tools/progress.py --check-touched`).
+- **Shared tables.** Keep `symbols/functions.csv`, `game/hooks.csv` and
+  `symbols/matching.csv` in address order, `symbols/reviews.csv` in address and date order, and
+  `symbols/verification.csv` in the order `tools/verify.py run --record` writes, one row per line
+  (`tools/validate_functions.py` checks the order). Git merges rows added or changed in different
+  places; only rows next to each other conflict.
+- **Bringing a branch up to date.** Run `tools/remerge.py` (add `--push` to push and
+  `--pr N` to re-queue): it merges `origin/main`, restores main's generated text, resolves conflicts
+  in the keyed tables row by row (a row only one side changed takes that side; a row both changed
+  differently stops for you, except dated test records, where the newer one wins), rebuilds and
+  validates before it commits. Anything else that conflicts is left for you to resolve.
 
 ### Definition of done
 
@@ -171,9 +211,24 @@ A function goes to `main` only when it is **verified and readable**:
   reason it can't be used (docs/VERIFY.md, "Recorded results and quarantine").
   `tools/validate_functions.py` checks it in CI.
 
+### Matching (optional)
+
+For small C-style functions, `tools/match.py` adds a stronger kind of evidence. It compiles C
+source with upstream clang 3.4.2 and the PS4 SDK's documented flags, then compares the result
+byte for byte with the original in your own dump ([docs/MATCHING.md](docs/MATCHING.md)). The
+result goes in `symbols/matching.csv`. Matching is optional and local only, like `verify.py`.
+Sony's own compiler is never used.
+
+A byte-exact match, whose calls and data references were also checked to reach the same places
+as the original's (`targets_checked=yes`), can stand in for the recorded cases that `verified`
+needs. The edge results and the independent review are still required. Write matching C from your own understanding of
+the function, never from decompiler output, and don't chase matching for large C++ engine
+functions. Function family members, which cannot be recorded, use the same rule through
+`tools/match.py family` ([docs/MATCHING.md](docs/MATCHING.md), "Families").
+
 Investigation notes and logs go in the pull request, not in the repository. Game screenshots and
 clips do not belong in the Paleblood code repository, issues, pull requests, or Discussions (see
-Rules).
+Rules for what is allowed).
 
 ## Your own copy (decompilation work)
 
@@ -195,9 +250,13 @@ firmware, keys or decryption tools.
   do not commit it.
 - **No game screenshots, clips or extracted images in the Paleblood code repository**, its issues,
   pull requests or Discussions. The hook and CI refuse image and video files (by extension and by
-  contents). The only images allowed here are recordings of our own tools' output (such as a
-  terminal running `tools/verify.py`), under `docs/assets/` and listed in `docs/assets/ALLOWLIST`
-  with the command that produced them (`tools/terminal_gif.py`). This repository rule does not
+  contents). The only images allowed here are under `docs/assets/` and listed in
+  `docs/assets/ALLOWLIST` with the command that produced them, and they are our own work:
+  recordings of our tools' output, and frames drawn by Paleblood's own renderer, at full
+  resolution, added by the maintainer with attribution (such as the README's title screen).
+  Every file is capped at 2 MiB; an allowlisted image may be up to 8 MiB, so a frame is posted
+  whole, never downscaled.
+  Contributors do not add game frames themselves; propose one in an issue instead. This repository rule does not
   decide whether a contextual image may appear on the public documentation site: each proposed
   site asset requires its own documented source, rights basis, editorial purpose and maintainer
   review under that site's media policy. Attribution or educational intent alone does not grant
@@ -222,7 +281,9 @@ firmware, keys or decryption tools.
   for example `frame_timing_update_delta`.
 - Replacement: `bb_` plus the name, `extern "C"`, for example `bb_frame_timing_update_delta`.
 - Files: `game/<system>/<topic>.cpp` (C++20; plain C in `.c` is fine too), snake_case.
-- A function must be at least 14 bytes to be hooked (the jump), checked by the validator.
+- A function must be at least 14 bytes to be hooked (the jump), checked by the validator. Tiny
+  functions repeated many times are replaced as function families instead, hooked across their
+  padding ([docs/FAMILIES.md](docs/FAMILIES.md)).
 - Addresses: `0x` and 8 lowercase hex digits, ascending in every CSV. They are PS4
   virtual addresses, **Ghidra image base `0x400000`**: the ELF `p_vaddr` plus `0x400000`, the
   same as the community patch files. Import the eboot with that base. Raw ELF virtual addresses

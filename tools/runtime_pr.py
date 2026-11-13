@@ -21,7 +21,9 @@ import session_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-RUNTIME_TEST_FILES = {'test/test_syslib.c', 'test/test_plugin.c', 'test/test_host_hooks.c'}
+# The boot harness's own exit test and its preloaded fixture library are runtime tests too.
+RUNTIME_TEST_FILES = {'test/test_syslib.c', 'test/syslib_test.h', 'test/test_plugin.c', 'test/test_host_hooks.c',
+                      'test/test_boot_exit.py', 'test/boot_exit_destructor.c'}
 RUNTIME_CODE_SUFFIXES = {'.c', '.cc', '.cpp', '.h', '.hh', '.hpp', '.s', '.S'}
 RUNTIME_DOC_FILES = {
     'docs/runtime.md',
@@ -49,6 +51,9 @@ def is_runtime_code_path(path: str) -> bool:
     if path in RUNTIME_TEST_FILES:
         return True
     p = PurePosixPath(path)
+    # A system library's tests in their own file (test/syslib_test.h): C sources directly in test/syslib/.
+    if len(p.parts) == 3 and p.parts[:2] == ('test', 'syslib') and p.suffix == '.c':
+        return True
     return bool(p.parts) and p.parts[0] == 'runtime' and (
         p.suffix in RUNTIME_CODE_SUFFIXES or p.name in {'CMakeLists.txt', 'Kbuild'}
     )
@@ -60,7 +65,14 @@ def is_runtime_document_path(path: str) -> bool:
     )
 
 
+# The status card is generated documentation: tools/progress_pr.py regenerates it with the
+# Markdown progress blocks in one documentation-only pull request.
+GENERATED_DOC_FILES = {'docs/assets/status-light.svg', 'docs/assets/status-dark.svg'}
+
+
 def is_documentation_path(path: str) -> bool:
+    if path in GENERATED_DOC_FILES:
+        return True
     p = PurePosixPath(path)
     return p.suffix.lower() == '.md' and (
         len(p.parts) == 1 or p.parts[0] == 'docs' or p.parts[0] == '.github'
@@ -112,6 +124,15 @@ def changed_replacements(base: str, head: str) -> list[dict]:
         for item in changes[group]:
             replacements[item['name']] = item
     return [replacements[name] for name in sorted(replacements)]
+
+
+def changed_families(base: str, head: str) -> list[dict]:
+    def read_head(path):
+        try:
+            return git('show', f'{head}:{path}')
+        except subprocess.CalledProcessError:
+            return None
+    return session_report.branch_family_changes(base, read_head)
 
 
 def check_runtime_report(text: str) -> list[str]:
@@ -210,14 +231,15 @@ def check_documentation_report(text: str) -> list[str]:
     return errors
 
 
-def check_report(text: str, paths: list[str], required_replacements: list | None = None) -> list[str]:
+def check_report(text: str, paths: list[str], required_replacements: list | None = None,
+                 required_families: list | None = None) -> list[str]:
     """Validate the report selected from changed files, never from labels or body claims."""
     scope = classify_paths(paths)
     if scope['classification'] == 'runtime-only':
         return check_runtime_report(text)
     if scope['classification'] == 'documentation-only':
         return check_documentation_report(text)
-    return session_report.check_body(text, required_replacements)
+    return session_report.check_body(text, required_replacements, required_families)
 
 
 def run_check(argv: list[str], label: str) -> bool:
@@ -254,14 +276,15 @@ def check_pull_request(base: str, head: str, body_path: str) -> int:
         print(f'runtime-pr: cannot read pull request body: {exc}', file=sys.stderr)
         return 2
 
-    required = None
+    required = required_families = None
     if scope['classification'] == 'decompilation/mixed':
         try:
             required = changed_replacements(merge_base, head)
+            required_families = changed_families(merge_base, head)
         except (subprocess.CalledProcessError, KeyError) as exc:
             print(f'runtime-pr: cannot inspect changed function replacements: {exc}', file=sys.stderr)
             return 2
-    errors = check_report(body, paths, required)
+    errors = check_report(body, paths, required, required_families)
     for error in errors:
         print(f'runtime-pr: {error}', file=sys.stderr)
     return 1 if errors else 0

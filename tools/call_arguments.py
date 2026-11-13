@@ -29,12 +29,15 @@ def required_arguments(entry: dict) -> int:
         return values
 
     count = bounded(entry.get('argc', 0), 'argc', MAX_GP_ARGUMENTS)
-    for index in sequence('argi'):
-        count = max(count, bounded(index, 'argi', MAX_GP_ARGUMENTS - 1) + 1)
+    for field in ('argi', 'argu8', 'argu32'):
+        for index in sequence(field):
+            count = max(count, bounded(index, field, MAX_GP_ARGUMENTS - 1) + 1)
     for field in ('argmem', 'writes'):
         for item in sequence(field):
             if not isinstance(item, dict):
                 raise ArgumentError(f'{field} entry must be an object')
+            if field == 'writes' and 'addr' in item and 'arg' not in item:
+                continue                    # a write at a fixed place reads no argument
             count = max(count, bounded(item.get('arg'), f'{field}.arg', MAX_GP_ARGUMENTS - 1) + 1)
     if 'series' in entry:
         series = entry['series']

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// These are SysV x86-64 call-through wire contracts, not recovered source prototypes.
+// These are SysV x86-64 call contracts, not recovered source prototypes.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
-#include "../follow_camera.h"
+#include "../follow_camera_state.h"
 
 namespace camera::math_calls
 {
@@ -38,7 +38,7 @@ RT_ORIGINAL(0x00848e80, axis_angle_quaternion, void(Vec4 *output, const Vec4 *ax
 
 // RDI: 16-byte output; one complete Vec4 BY VALUE in XMM0 (not a reference and not
 // a four-float scalar struct). The original explicitly returns output in RAX.
-// An explicit output pointer preserves this wire ABI regardless of whether the
+// An explicit output pointer preserves this calling convention regardless of whether the
 // original source expressed RDI as a hidden aggregate-return slot or a parameter.
 RT_ORIGINAL(0x01e4d420, subject_rotation_quaternion, Vec4 *(Vec4 *output, Vec4 subject_rotation));
 

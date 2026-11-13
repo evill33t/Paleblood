@@ -66,6 +66,18 @@ def decomp_body(replaced=None, verify=None):
     return session_report.render(report)
 
 
+class VerifyResults(unittest.TestCase):
+    def test_a_run_directory_or_its_summary_file(self):
+        import tempfile
+        summary = {'function': 'example_function', 'cases': 14, 'passed': 14, 'failed': 0, 'failures': []}
+        with tempfile.TemporaryDirectory() as out:
+            with open(os.path.join(out, 'summary.json'), 'w') as f:
+                json.dump(summary, f)
+            expected = [{'function': 'example_function', 'cases': 14, 'passed': 14, 'failed': 0}]
+            self.assertEqual(session_report.verify_results([out]), expected)
+            self.assertEqual(session_report.verify_results([os.path.join(out, 'summary.json')]), expected)
+
+
 class ChangedFileClassification(unittest.TestCase):
     def test_scaffold_host_contract_test_uses_runtime_path(self):
         paths = ['CMakeLists.txt', 'test/test_plugin.c']
@@ -88,6 +100,14 @@ class ChangedFileClassification(unittest.TestCase):
         paths = ['.github/pull_request_template.md']
         self.assertEqual(runtime_pr.classify_paths(paths)['classification'], 'documentation-only')
         self.assertEqual(runtime_pr.check_report(documentation_body(), paths), [])
+
+    def test_progress_regeneration_is_documentation_only(self):
+        # tools/progress_pr.py: the generated blocks and the status card, nothing else
+        paths = ['README.md', 'STATUS.md', 'CONTRIBUTING.md',
+                 'docs/assets/status-light.svg', 'docs/assets/status-dark.svg']
+        self.assertEqual(runtime_pr.classify_paths(paths)['classification'], 'documentation-only')
+        self.assertEqual(runtime_pr.classify_paths(['docs/assets/other.svg'])['classification'],
+                         'decompilation/mixed')
 
     def test_runtime_documentation_without_code_is_documentation_only(self):
         paths = ['docs/runtime.md', 'docs/runtime-syscalls.md', 'CONTRIBUTING.md']
@@ -130,6 +150,14 @@ class ChangedFileClassification(unittest.TestCase):
                                  'decompilation/mixed')
         self.assertEqual(runtime_pr.classify_paths(['runtime/syslib/time.c', 'tools/new_tool.py'])[
             'classification'], 'decompilation/mixed')
+
+    def test_syslib_tests_in_their_own_files_are_runtime(self):
+        paths = ['runtime/syslib/pad.c', 'test/syslib/pad_input.c', 'test/syslib_test.h']
+        self.assertEqual(runtime_pr.classify_paths(paths)['classification'], 'runtime-only')
+        for path in ('test/syslib/helper.py', 'test/syslib/deep/x.c', 'test/other/x.c'):
+            with self.subTest(path=path):
+                self.assertEqual(runtime_pr.classify_paths(['runtime/syslib/pad.c', path])['classification'],
+                                 'decompilation/mixed')
 
     def test_unsafe_and_empty_path_sets_fail_closed(self):
         self.assertEqual(runtime_pr.classify_paths(['runtime/../game/x.cpp'])['classification'],

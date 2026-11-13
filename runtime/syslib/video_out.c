@@ -12,28 +12,33 @@
    flip status until the flip argument reaches the frame it submitted.
 
    The runtime has no display yet: it keeps each port's buffers and status, and an hsync flip
-   completes at once: the current buffer and flip argument change, the flip count grows and the
-   port's flip events are triggered. A vsync flip, other flip modes or rates, a flip status before
-   the first flip (its initial argument is not established), other open arguments, and errors stop
-   by name. The flip event's ident is 0 and its data the flip argument: the PS4's values are not
-   established and no caller reads them. */
+   completes at once, a vsync flip at the next 60 Hz tick of the host's monotonic clock: the
+   current buffer and flip argument change, the flip count grows and the port's flip events are
+   triggered. A flip the graphics driver asks for after a frame's work (rt_video_out_queue_flip,
+   below) is shown by a thread of the runtime's own, in order; sceVideoOutSubmitFlip waits for
+   those first. A flip status before the first flip is all zero (no flips, nothing pending, buffer
+   0). The PS4's initial flip argument is not established, but the only caller (its flip loop,
+   calling at 0x02ad6ee9) reads it only once it has submitted as many frames as it has buffers,
+   which takes a flip first; before that it only checks that the call succeeds. Other flip modes
+   or rates, other open arguments, and errors stop by name. The flip event's ident is 0 and its data
+   the flip argument: the PS4's values are not established and no caller reads them. */
 #include "runtime/equeue.h"
+#include "runtime/host_time.h"
 #include "runtime/process.h"
+#include "runtime/renderer.h"
+#include "runtime/display.h"
 #include "runtime/syslib.h"
+#include "runtime/video_out.h"
 
 #include <pthread.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
-enum { FLIP_MODE_HSYNC = 2, MAX_PORTS = 4, MAX_BUFFERS = 16, MAX_FLIP_QUEUES = 4 };
+enum { FLIP_MODE_VSYNC = 1, FLIP_MODE_HSYNC = 2, MAX_PORTS = 4, MAX_BUFFERS = 16, MAX_FLIP_QUEUES = 4 };
+enum { VBLANKS_PER_SECOND = 60 };
 enum { FLIP_RATE_60HZ = 0, FLIP_RATE_30HZ = 1, FLIP_RATE_20HZ = 2 };
-
-typedef struct {
-    int32_t format, tiling, aspect;
-    uint32_t width, height, pitch;
-    uint64_t reserved[2];
-} buffer_attribute;
-_Static_assert(sizeof(buffer_attribute) == 40, "OrbisVideoOutBufferAttribute is 40 bytes");
 
 typedef struct {
     uint64_t count, process_time, system_time;
@@ -49,7 +54,7 @@ typedef struct {
     int32_t flip_rate;
     void *buffers[MAX_BUFFERS];
     int buffer_count;
-    buffer_attribute attribute;
+    rt_video_out_buffer_attribute attribute;
     rt_equeue *queues[MAX_FLIP_QUEUES];
     int queue_count;
     flip_status status;
@@ -109,16 +114,22 @@ static int32_t add_flip_event(rt_equeue *queue, int32_t handle, void *udata)
     return 0;
 }
 
-/* Fills the attribute; the SDK declares it with no result. */
-static void set_buffer_attribute(buffer_attribute *a, uint32_t format, uint32_t tiling, uint32_t aspect,
-                                 uint32_t width, uint32_t height, uint32_t pitch)
+/* The public API has no result. The libSceVideoOut implementation also leaves
+   zero-extended pitch in RAX. Values are copied without format validation. */
+static uint64_t set_buffer_attribute(void *output, uint32_t format, uint32_t tiling, uint32_t aspect,
+                                     uint32_t width, uint32_t height, uint32_t pitch)
 {
-    if (!a) rt_fatal("sceVideoOutSetBufferAttribute", "no attribute to fill");
-    *a = (buffer_attribute){(int32_t)format, (int32_t)tiling, (int32_t)aspect, width, height, pitch, {0, 0}};
+    if (!output) rt_fatal("sceVideoOutSetBufferAttribute", "no attribute to fill: the error value is not established");
+    const uint32_t captured_pitch = pitch;
+    rt_video_out_buffer_attribute *attribute = output;
+    memset(attribute->reserved, 0, sizeof attribute->reserved);
+    const uint32_t fields[] = {format, tiling, aspect, width, height, captured_pitch};
+    memcpy(attribute, fields, sizeof fields);
+    return captured_pitch;
 }
 
 static int32_t register_buffers(int32_t handle, int32_t start, void *const *addresses, int32_t count,
-                                const buffer_attribute *attribute)
+                                const rt_video_out_buffer_attribute *attribute)
 {
     static const char fn[] = "sceVideoOutRegisterBuffers";
     if (!addresses || !attribute || count < 1) rt_fatal(fn, "no buffers or attribute: the error value is not established");
@@ -133,16 +144,70 @@ static int32_t register_buffers(int32_t handle, int32_t start, void *const *addr
     p->buffer_count = count;
     p->attribute = *attribute;
     pthread_mutex_unlock(&ports_lock);
+    uint32_t width, height;
+    memcpy(&width, attribute->width, sizeof width);
+    memcpy(&height, attribute->height, sizeof height);
+    rt_display_attach(handle, width, height, count); /* host frames for the renderer */
     return 0; /* the set's index: this is the first */
 }
 
-static int32_t submit_flip(int32_t handle, int32_t buffer, int32_t mode, int64_t argument)
+/* A vsync flip takes effect at the display's next vertical blank. The runtime has no display, so
+   its vertical blanks are the 60 Hz ticks of the host's monotonic clock (flip rate 0, the only one
+   it accepts): the flip waits for the next tick on the thread that shows it, then completes. */
+static void wait_for_vblank(const char *function)
 {
-    static const char fn[] = "sceVideoOutSubmitFlip";
-    if (mode != FLIP_MODE_HSYNC) rt_fatal(fn, "a flip mode other than the observed hsync (2): pacing to vblank is not implemented");
+    const int64_t period_ns = 1000000000 / VBLANKS_PER_SECOND;
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) rt_fatal(function, "the host monotonic clock read failed");
+    const int64_t now_ns = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
+    const int64_t next_ns = (now_ns / period_ns + 1) * period_ns;
+    const struct timespec at = {(time_t)(next_ns / 1000000000), (long)(next_ns % 1000000000)};
+    if (rt_host_sleep_until_monotonic(&at)) rt_fatal(function, "the host monotonic wait failed");
+}
+
+/* Stops a flip the runtime does not model: a mode other than vsync or hsync, a port it did not hand
+   out, a buffer outside the port's registered set. */
+static void check_flip(const char *fn, int32_t handle, int32_t buffer, int32_t mode)
+{
+    if (mode != FLIP_MODE_HSYNC && mode != FLIP_MODE_VSYNC) rt_fatal(fn, "a flip mode other than vsync (1) or hsync (2)");
+    pthread_mutex_lock(&ports_lock);
+    const video_port *const p = port_of(fn, handle);
+    if (buffer < 0 || buffer >= p->buffer_count) rt_fatal(fn, "a buffer index outside the registered set");
+    pthread_mutex_unlock(&ports_lock);
+}
+
+uint64_t rt_video_out_buffer_address(const char *caller, int32_t handle, int32_t buffer)
+{
+    pthread_mutex_lock(&ports_lock);
+    const video_port *const p = port_of(caller, handle);
+    if (buffer < 0 || buffer >= p->buffer_count) rt_fatal(caller, "a buffer index outside the registered set");
+    const uint64_t address = (uint64_t)(uintptr_t)p->buffers[buffer];
+    pthread_mutex_unlock(&ports_lock);
+    return address;
+}
+
+/* What the renderer drew into the buffer, copied into the display's frame for it, as it is when
+   the flip is asked for. */
+static void capture_frame(int32_t handle, int32_t buffer)
+{
+    pthread_mutex_lock(&ports_lock);
+    const video_port *const p = &ports[handle];
+    const uint64_t address = (uint64_t)(uintptr_t)p->buffers[buffer];
+    uint32_t width, height;
+    memcpy(&width, p->attribute.width, sizeof width);
+    memcpy(&height, p->attribute.height, sizeof height);
+    pthread_mutex_unlock(&ports_lock);
+    uint32_t *const frame = rt_display_frame(handle, buffer);
+    if (frame) rt_renderer_frame(address, frame, width, height);
+}
+
+/* The flip taking effect: at the next vertical blank for vsync, then the port's status, the
+   display, and the port's flip events. */
+static void show_flip(const char *fn, int32_t handle, int32_t buffer, int32_t mode, int64_t argument)
+{
+    if (mode == FLIP_MODE_VSYNC) wait_for_vblank(fn);
     pthread_mutex_lock(&ports_lock);
     video_port *const p = port_of(fn, handle);
-    if (buffer < 0 || buffer >= p->buffer_count) rt_fatal(fn, "a buffer index outside the registered set");
     p->status.count++;
     p->status.flip_argument = argument;
     p->status.current_buffer = buffer;
@@ -150,7 +215,94 @@ static int32_t submit_flip(int32_t handle, int32_t buffer, int32_t mode, int64_t
     const int n = p->queue_count;
     memcpy(queues, p->queues, sizeof queues);
     pthread_mutex_unlock(&ports_lock);
+    rt_display_present(handle, buffer);
     for (int i = 0; i < n; i++) rt_equeue_trigger(queues[i], RT_EVFILT_DISPLAY, 0, argument);
+}
+
+/* Flips the graphics driver queues once a frame's work is done (rt_video_out_queue_flip), shown in
+   order by a thread of their own, so that the thread finishing the GPU's work (the renderer's)
+   goes on with the next frame while a flip waits for its vertical blank: on the PS4 the GPU hands
+   a flip to the display and goes on with the commands after it, and the flip takes effect at the
+   display's next vertical blank (shadPS4's video out driver likewise queues each flip request,
+   end-of-pipe ones included, and completes them on a present thread of its own; facts only). Held
+   on the renderer's thread, a flip delayed every later frame's work by up to a vertical blank,
+   and with it the title's own wait for a free display buffer before each present. */
+typedef struct {
+    const char *caller;
+    int32_t handle, buffer, mode;
+    int64_t argument;
+} queued_flip;
+
+enum { FLIP_QUEUE_SLOTS = 64 };
+static pthread_mutex_t flips_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t flips_changed = PTHREAD_COND_INITIALIZER;
+static queued_flip flip_queue[FLIP_QUEUE_SLOTS];
+static unsigned flip_first, flip_count;
+static int flip_showing;    /* the thread has taken a flip off the queue and not finished it */
+static int flipper_started; /* the thread exists in this process (a child after fork has none) */
+static pid_t flipper_process;
+
+static void *flipper(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        pthread_mutex_lock(&flips_lock);
+        while (!flip_count) pthread_cond_wait(&flips_changed, &flips_lock);
+        const queued_flip f = flip_queue[flip_first];
+        flip_first = (flip_first + 1) % FLIP_QUEUE_SLOTS, flip_count--, flip_showing = 1;
+        pthread_cond_broadcast(&flips_changed);
+        pthread_mutex_unlock(&flips_lock);
+        show_flip(f.caller, f.handle, f.buffer, f.mode, f.argument);
+        pthread_mutex_lock(&flips_lock);
+        flip_showing = 0;
+        pthread_cond_broadcast(&flips_changed);
+        pthread_mutex_unlock(&flips_lock);
+    }
+    return NULL;
+}
+
+/* With flips_lock held: forgets a queue left by the parent of a forked process, whose thread is
+   not in this one. */
+static void flips_in_this_process(void)
+{
+    if (flipper_started && flipper_process != getpid()) flipper_started = 0, flip_count = 0, flip_showing = 0;
+}
+
+/* Waits until every queued flip has been shown. */
+static void flips_drained(void)
+{
+    pthread_mutex_lock(&flips_lock);
+    flips_in_this_process();
+    while (flip_count || flip_showing) pthread_cond_wait(&flips_changed, &flips_lock);
+    pthread_mutex_unlock(&flips_lock);
+}
+
+int32_t rt_video_out_flip(const char *fn, int32_t handle, int32_t buffer, int32_t mode, int64_t argument)
+{
+    check_flip(fn, handle, buffer, mode);
+    flips_drained(); /* after the flips queued before it */
+    capture_frame(handle, buffer);
+    show_flip(fn, handle, buffer, mode, argument);
+    return 0;
+}
+
+int32_t rt_video_out_queue_flip(const char *fn, int32_t handle, int32_t buffer, int32_t mode, int64_t argument)
+{
+    check_flip(fn, handle, buffer, mode);
+    capture_frame(handle, buffer);
+    pthread_mutex_lock(&flips_lock);
+    flips_in_this_process();
+    if (!flipper_started) {
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, flipper, NULL)) rt_fatal(fn, "the thread that shows flips cannot start");
+        pthread_detach(thread);
+        flipper_started = 1, flipper_process = getpid();
+    }
+    while (flip_count == FLIP_QUEUE_SLOTS) pthread_cond_wait(&flips_changed, &flips_lock);
+    flip_queue[(flip_first + flip_count) % FLIP_QUEUE_SLOTS] = (queued_flip){fn, handle, buffer, mode, argument};
+    flip_count++;
+    pthread_cond_broadcast(&flips_changed);
+    pthread_mutex_unlock(&flips_lock);
     return 0;
 }
 
@@ -160,10 +312,14 @@ static int32_t get_flip_status(int32_t handle, flip_status *out)
     if (!out) rt_fatal(fn, "no status to fill: the error value is not established");
     pthread_mutex_lock(&ports_lock);
     video_port *const p = port_of(fn, handle);
-    if (!p->status.count) rt_fatal(fn, "a status before the first flip: the initial flip argument is not established");
-    *out = p->status;
+    *out = p->status; /* before the first flip: all zero, no flips yet (see the note above) */
     pthread_mutex_unlock(&ports_lock);
     return 0;
+}
+
+static int32_t submit_flip(int32_t handle, int32_t buffer, int32_t mode, int64_t argument)
+{
+    return rt_video_out_flip("sceVideoOutSubmitFlip", handle, buffer, mode, argument);
 }
 
 RT_SYSLIB("libSceVideoOut", sceVideoOutOpen, video_out_open);

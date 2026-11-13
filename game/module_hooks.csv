@@ -1,0 +1,2 @@
+module,offset,size,first_bytes,action,name
+libc,0x0005fac0,7,8b058e210700c3,stop,std::thread::hardware_concurrency

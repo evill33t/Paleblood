@@ -21,7 +21,10 @@ symbols/quarantine.csv     cases that cannot be used, each with the reason.
 
 A function may be verified only when it has current recorded and edge rows without an option,
 and none of its current rows has a failure that is not quarantined (docs/VERIFY.md,
-"Quarantine"); tools/validate_functions.py enforces it.
+"Quarantine"); tools/validate_functions.py enforces it. A current byte-exact row in
+symbols/matching.csv (tools/match.py, docs/MATCHING.md) may stand in for the recorded row, but only
+when its targets_checked is yes: every call, jump and data reference was shown to reach the same
+place as the original's. The edge row and the independent review are still required.
 """
 from __future__ import annotations
 
@@ -40,10 +43,12 @@ SOURCE_HASH_LENGTH = 16
 INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.M)
 
 
-def defining_files(root: str, name: str) -> list[str]:
-    """Files under game/ that define the replacement bb_<name>."""
+def defining_files(root: str, name: str, family: bool = False) -> list[str]:
+    """Files under game/ that define the replacement bb_<name> (with family, also the
+    bb_<name>_<value> replacements of a parameterized family)."""
     out = []
-    pattern = re.compile(rf'\bbb_{re.escape(name)}\s*\(')
+    suffix = r'(?:_\w+)?' if family else ''
+    pattern = re.compile(rf'\bbb_{re.escape(name)}{suffix}\s*\(')
     for dp, _, fns in os.walk(os.path.join(root, 'game')):
         for fn in sorted(fns):
             if fn.endswith(('.c', '.cc', '.cpp')):
@@ -54,11 +59,11 @@ def defining_files(root: str, name: str) -> list[str]:
     return sorted(out)
 
 
-def source_files(root: str, name: str) -> list[str]:
+def source_files(root: str, name: str, family: bool = False) -> list[str]:
     """The defining files and every header they include from game/ or runtime/include/."""
     search = [os.path.join(root, 'game'), os.path.join(root, 'runtime', 'include')]
     seen: set[str] = set()
-    todo = [os.path.join(root, p) for p in defining_files(root, name)]
+    todo = [os.path.join(root, p) for p in defining_files(root, name, family)]
     while todo:
         path = os.path.normpath(todo.pop())
         if path in seen or not os.path.isfile(path):
@@ -75,8 +80,8 @@ def source_files(root: str, name: str) -> list[str]:
     return sorted(os.path.relpath(p, root).replace(os.sep, '/') for p in seen)
 
 
-def source_hash(root: str, name: str) -> str:
-    files = source_files(root, name)
+def source_hash(root: str, name: str, family: bool = False) -> str:
+    files = source_files(root, name, family)
     if not files:
         return ''
     h = hashlib.sha256()
@@ -131,10 +136,25 @@ def record(root: str, function: str, cases: str, option: str, case_names: list[s
         rows = [r for r in read_csv(path, VERIFICATION_HEADER)
                 if (r['function'], r['cases'], r['option']) != (function, cases, option)]
         rows.append(row)
-        rows.sort(key=lambda r: (r['function'], CASE_SETS.index(r['cases']) if r['cases'] in CASE_SETS else 99,
-                                 r['option']))
+        rows.sort(key=record_order)
         write_csv(path, VERIFICATION_HEADER, rows)
     return row
+
+
+def record_order(r: dict) -> tuple:
+    """The order record() keeps the rows in: by function, case set and option. One row per key,
+    one row per line, so pull requests that record different functions merge without conflicts
+    (CONTRIBUTING.md, "Generated progress and merging main")."""
+    return (r['function'], CASE_SETS.index(r['cases']) if r['cases'] in CASE_SETS else 99, r['option'])
+
+
+def order_errors(rows: list[dict], rel: str, key) -> list[str]:
+    errs = []
+    for prev, r in zip(rows, rows[1:]):
+        if key(r) <= key(prev):
+            errs.append(f"{rel}:{r['_line']}: rows must be unique and in order (tools/verify.py run --record "
+                        "keeps them so; tools/remerge.py restores it after a merge)")
+    return errs
 
 
 def check(root: str, funcs: list[dict]) -> list[str]:
@@ -156,6 +176,9 @@ def check(root: str, funcs: list[dict]) -> list[str]:
             errs.append(f"{where}: a quarantined case needs its reason")
         if not q['case'].strip():
             errs.append(f"{where}: case is empty")
+    errs += order_errors(results, 'symbols/verification.csv', record_order)
+    errs += order_errors(quarantine, 'symbols/quarantine.csv',
+                         lambda q: (*record_order(q), q['case']))
     counts: dict[tuple, int] = {}
     for q in quarantine:
         key = (q['function'], q['cases'], q['option'])
@@ -176,6 +199,8 @@ def check(root: str, funcs: list[dict]) -> list[str]:
         if held > counts.get((r['function'], r['cases'], r['option']), 0):
             errs.append(f'{where}: {held} quarantined, but symbols/quarantine.csv lists fewer cases for it')
         by_function.setdefault(r['function'], []).append(r)
+    import match
+    matched = match.byte_exact_functions(root)       # byte_exact=yes and targets_checked=yes, source current
     for f in funcs:
         if f['status'] != 'verified':
             continue
@@ -185,6 +210,8 @@ def check(root: str, funcs: list[dict]) -> list[str]:
         stale = [r for r in rows if r['source'] != current]
         fresh = [r for r in rows if r['source'] == current]
         for need in ('recorded', 'edge'):
+            if need == 'recorded' and f['name'] in matched:
+                continue        # a current, target-checked byte-exact match stands in (docs/MATCHING.md)
             if not any(r['cases'] == need and r['option'] == '' for r in fresh):
                 errs.append(f"{where} without a current {need} result in symbols/verification.csv "
                             f"(tools/verify.py run --record {need})")

@@ -111,14 +111,16 @@ SelfUtil build produced the ELF.
   an `unaff_*` or `CONCAT` expression is a sign to read the disassembly.
 - Float comparisons that look odd (`ucomiss` plus parity checks) encode NaN
   handling that the replacement has to keep.
+
 - A scalar SSE intrinsic is not by itself an operand-order constraint. In the follow-camera
   pitch getter, optimized Clang swapped the horizontal add operands and widened two scalar
   squares to a packed multiply. GCC preserved the order in the tested build. The dedicated
   `engine::horizontal_length` helper constrains the four scalar instructions and uses distinct
   read/write registers. Distinct-NaN-payload fixtures check the argument passed to `atan2f`,
-  but the tested QEMU VM did not distinguish a deliberately swapped horizontal-add variant.
-  Keep that survivor as an explicit coverage limitation; optimized assembly independently
-  confirms the intended instruction order in both compiler builds.
+  and independent native x86 review catches a swapped horizontal-add variant.
+  The earlier QEMU VM did not distinguish that mutant: its survival is a limitation of that
+  VM run, rather than a gap in these fixtures. Check the optimized instruction order in both
+  compiler builds as well as running the cases.
 
 ## Imports and system calls
 
@@ -130,7 +132,9 @@ SelfUtil build produced the ELF.
 ## Hooks
 
 - The hook is a 14-byte absolute jump (`jmp [rip+0]` plus the target) written over the start of
-  the original function. Shorter functions cannot be hooked that way.
+  the original function. Shorter functions cannot be hooked that way, except function family
+  members, whose jump overwrites only the compiler's NOP padding up to the next function
+  ([docs/FAMILIES.md](docs/FAMILIES.md)).
 - Nothing may jump into the first 14 bytes of a hooked function from elsewhere: check the
   references to the function's start region in Ghidra before hooking.
 - A replacement calls library functions through the game's own thunks (declared with
@@ -173,7 +177,12 @@ The invalid-owner route instead reads `0x0575a908`, initialized by this patch to
 `0x3c088889` (1/120 s). A replacement must reproduce the reachable patched routes, including
 their float operand order, rather than keep the stock time step because one isolated edit
 looks invalid. Retain the exact XML revision and replay all its writes before reasoning about
-option coverage; other revisions may differ.
+option coverage; other revisions may differ. The file at that commit has SHA-256
+`cb85bec1aa772b1092327b231bcf81e42b8670d73a0a7032cf061e6da9d29e00`: check yours before
+`tools/patch_overlap.py` or `tools/verify.py --patch`. Any other patch file can differ (it may
+lack lines such as the `60 FPS++` write at `0x0183E2B2`), so a check against it can fail where
+the community patches don't, or miss an edit they make.
+
 
 ## Unknown FMOD thread names do not initialize the affinity output
 
@@ -184,3 +193,21 @@ The caller at `0x01118420` accepts a name argument; it does not establish that e
 one the lookup recognizes. The creation wrapper remains original until this path's contract
 is established. Adding a default affinity mask would invent behavior; testing only recognized
 names would leave this path unresolved.
+
+## Face table setters assume the row exists
+
+The FaceGenParam and FaceParam setters that character creation uses (`game/param/face_params.cpp`)
+never handle an id the table has no row for. Most of them (`0x02317ad0`, `0x02317be0`,
+`0x02317cf0`, the seven hair and left eye setters `0x023189f0`..`0x02318ff0`, `0x0231a5e0`..
+`0x0231a8e0`, `0x0231a9e0`, `0x0231aaf0`, `0x0231ac00`) inline the index's binary search with no
+low-above-high exit, so a missing id never returns; an entry with a negative row number is used as
+a huge unsigned offset. The part color setter `0x02318280`, both decal setters (`0x023188b0`,
+`0x0231a340`) and the body scale setter `0x0231a480` do bound the search, but then write the field
+at its offset from a null row (the body scale setter only for an index below 5: it checks the index
+after the search). The face apply function `0x018e4110` looks the row up first (`0x02317560`)
+and returns without one; the setters' other callers have not been checked.
+
+The replacements stop the process by name there (`engine::stop`, `game/engine/stop.h`, which
+reaches the boot harness's `rt_fatal`) rather than writing nothing: quietly skipping the write would
+hide a caller that passes a bad id. Verification cannot compare these paths (the original hangs or
+faults), so no case covers them.

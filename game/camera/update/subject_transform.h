@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera subject transform stage, included only by update.cpp.
 #pragma once
-#include "../../engine/camera_update/math.h"
+#include "math.h"
 // Capture the late subject transform, call the original quaternion/matrix helpers, normalize
 // the generated rows and publish the fresh subject frame. Reset/chase work is not included.
 #include "math_calls.h"
 
 namespace camera::update::subject_transform
 {
-namespace packed = engine::camera_subject_transform_math;
+namespace packed = camera::update::math;
 namespace math = camera::math_calls;
 
 // This late direct subject chain is independent from the early angular-pivot chain through
@@ -45,8 +45,8 @@ RT_GLOBAL(0x04cf2510, output_w_normalization, const Vec4);
 
 struct FreshSubjectTransformState
 {
-    Vec4 control_input;      // complete original XMM3 saved to rbp-0x3e0 at stage entry
-    Matrix4 fresh_transform; // live XMM1/XMM8/XMM5/XMM0 at continuation; not later chased state
+    Vec4 control_input;
+    Matrix4 fresh_transform;
 };
 
 // The original packs three columns from the helper output's first three scalar columns,
@@ -74,10 +74,10 @@ FreshSubjectTransformState prepare_fresh_subject_transform(FollowCamera &state, 
     result.control_input = control_input;
 
     auto *prefix = reinterpret_cast<LateSubjectPrefix *>(subject);
-    LateTransformLink *link = packed::capture_pointer(prefix->transform_link);
-    LateSubjectTransform *transform = packed::capture_pointer(link->transform);
-    const uint8_t yaw_only = packed::capture_byte(transform->yaw_only);
-    const Vec4 rotation = packed::capture(transform->rotation);
+    LateTransformLink *link = prefix->transform_link;
+    LateSubjectTransform *transform = link->transform;
+    const uint8_t yaw_only = transform->yaw_only;
+    const Vec4 rotation = transform->rotation;
 
     Vec4 quaternion;
     // Preserve the original output-slot reuse on the full-rotation path: its 16-byte
@@ -90,12 +90,12 @@ FreshSubjectTransformState prepare_fresh_subject_transform(FollowCamera &state, 
     else
     {
         (void)math::subject_rotation_quaternion(&generated.axis_x, rotation);
-        quaternion = packed::capture(generated.axis_x);
+        quaternion = generated.axis_x;
     }
 
     // Calls may alter the captured transform's position or replace its pointer chain.
     // Original b974 reads from the already-captured transform only AFTER the helper returns.
-    const Vec4 position = packed::capture(transform->position);
+    const Vec4 position = transform->position;
     const Vec4 normalized_position =
         packed::add(packed::bit_and(position, position_xyz_bits.get()), position_unit_w.get());
     const math::TransformInput48 source{
@@ -106,10 +106,10 @@ FreshSubjectTransformState prepare_fresh_subject_transform(FollowCamera &state, 
     math::transform_matrix(&source, &generated);
 
     result.fresh_transform = normalize_generated_transform(generated);
-    packed::publish(state.subject_transform.axis_x, result.fresh_transform.axis_x);
-    packed::publish(state.subject_transform.axis_y, result.fresh_transform.axis_y);
-    packed::publish(state.subject_transform.forward, result.fresh_transform.forward);
-    packed::publish(state.subject_transform.position, result.fresh_transform.position);
+    state.subject_transform.axis_x = result.fresh_transform.axis_x;
+    state.subject_transform.axis_y = result.fresh_transform.axis_y;
+    state.subject_transform.forward = result.fresh_transform.forward;
+    state.subject_transform.position = result.fresh_transform.position;
     return result;
 }
 

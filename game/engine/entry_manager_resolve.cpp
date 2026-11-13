@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Resolve the handle's low-word table index. The timed-record collector repeats this lookup
-// before querying an entry; this helper does not validate the handle's upper word.
+// Resolve the handle's low-word table index (callers: the 0x02717f30-0x02718c80 family and
+// 0x0210f5a0); this helper does not validate the handle's upper word.
 #include "entry_manager.h"
 
 #include <cstring>

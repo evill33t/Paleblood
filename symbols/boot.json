@@ -1,20 +1,18 @@
 {
-  "fault": null,
-  "first_unimplemented": {
-    "caller": "libc.elf",
-    "library": "libkernel",
-    "nid": "8+s5BzZjxSg",
-    "returns_to": "libc.elf+0x81ad5",
-    "symbol": "scePthreadAttrGetaffinity"
+  "fault": {
+    "address": "0x0",
+    "at": "host+0x7f82a5d5acc0",
+    "signal": 0
   },
+  "first_unimplemented": null,
   "imports_bundled": 219,
-  "imports_called": 7,
-  "imports_implemented": 33,
-  "imports_remaining": 434,
+  "imports_called": 248,
+  "imports_implemented": 467,
+  "imports_remaining": 0,
   "imports_total": 686,
-  "imports_unresolved": 4,
-  "milestone": "loaded",
-  "milestone_index": 0,
+  "imports_unresolved": 0,
+  "milestone": "first flip",
+  "milestone_index": 8,
   "milestones": [
     "loaded",
     "entry",
@@ -26,22 +24,32 @@
     "gpu",
     "first flip"
   ],
+  "module_hooks": [
+    {
+      "action": "stop",
+      "module": "libc.elf",
+      "name": "std::thread::hardware_concurrency",
+      "offset": "0x5fac0"
+    }
+  ],
   "modules": [
     {
       "exports": 2140,
       "imports": 79,
-      "imports_remaining": 55,
+      "imports_remaining": 0,
       "name": "libc.elf"
     },
     {
       "exports": 165,
       "imports": 83,
-      "imports_remaining": 65,
+      "imports_remaining": 2,
       "name": "libSceFios2.elf"
     }
   ],
-  "outcome": "unimplemented",
-  "phase": "libc.elf",
+  "outcome": "timeout",
+  "phase": "eboot",
+  "runtime_stop": null,
+  "stopped_by_hook": null,
   "stub_modules": [
     {
       "id": "0x0038",
@@ -67,6 +75,86 @@
       "id": "0x0039",
       "loaded": false,
       "name": "libSceSmart"
+    },
+    {
+      "id": "0x00b4",
+      "loaded": true,
+      "name": "libSceAppContent"
+    },
+    {
+      "id": "0x00ad",
+      "loaded": true,
+      "name": "libSceNpTrophy"
+    },
+    {
+      "id": "0x0019",
+      "loaded": true,
+      "name": "libSceNpUtility"
+    },
+    {
+      "id": "0x001a",
+      "loaded": false,
+      "name": "libSceVoice"
+    },
+    {
+      "id": "0x001c",
+      "loaded": true,
+      "name": "libSceNpMatching2"
+    },
+    {
+      "id": "0x001e",
+      "loaded": true,
+      "name": "libSceNpScoreRanking"
+    },
+    {
+      "id": "0x0083",
+      "loaded": true,
+      "name": "libScePlayGo"
+    },
+    {
+      "id": "0x0096",
+      "loaded": false,
+      "name": "libSceImeDialog"
+    },
+    {
+      "id": "0x009d",
+      "loaded": true,
+      "name": "libSceNpAuth"
+    },
+    {
+      "id": "0x00a0",
+      "loaded": false,
+      "name": "libSceSaveDataDialog"
+    },
+    {
+      "id": "0x00a4",
+      "loaded": false,
+      "name": "libSceMsgDialog"
+    },
+    {
+      "id": "0x00a5",
+      "loaded": false,
+      "name": "libSceAvPlayer"
+    },
+    {
+      "id": "0x00a8",
+      "loaded": false,
+      "name": "libSceNpCommerce"
+    },
+    {
+      "id": "0x00a9",
+      "loaded": false,
+      "name": "libSceMouse"
+    },
+    {
+      "id": "0x00b2",
+      "loaded": true,
+      "name": "libSceNpProfileDialog"
+    },
+    {
+      "id": "0x00b5",
+      "loaded": true,
+      "name": "libSceNpSignaling"
     }
   ]
 }

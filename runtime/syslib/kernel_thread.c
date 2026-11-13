@@ -8,10 +8,17 @@
    attribute records only what has been set or copied into it; reading a value the runtime does not
    know (one the system would supply) is not implemented, so the boot stops there by name instead of
    guessing. */
+#define _GNU_SOURCE /* pthread_setname_np */
 #include "runtime/process.h"
+#include "runtime/memory.h"
 #include "runtime/syslib.h"
 
+#if defined(__APPLE__) && defined(__MACH__)
+#include "runtime/guest_pointer.h"
+#else
 #include <asm/prctl.h>
+#include <sys/syscall.h>
+#endif
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -19,10 +26,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 
-enum { BSD_ENOMEM = 12, BSD_EINVAL = 22 };
+enum { BSD_ESRCH = 3, BSD_EDEADLK = 11, BSD_ENOMEM = 12, BSD_EINVAL = 22, BSD_ENOTSUP = 45 };
 #define SCE_KERNEL_ERROR(e) ((int)(0x80020000u + (unsigned)(e)))
 
 /* PTHREAD_CREATE_JOINABLE and PTHREAD_CREATE_DETACHED in FreeBSD's <pthread.h>. The OpenOrbis
@@ -30,6 +36,10 @@ enum { BSD_ENOMEM = 12, BSD_EINVAL = 22 };
    ORBIS_PTHREAD_CREATE_DETACHED with the same values; it follows FreeBSD's text, so it corroborates
    them rather than measuring them. */
 enum { DETACH_JOINABLE = 0, DETACH_DETACHED = 1 };
+
+/* PTHREAD_EXPLICIT_SCHED and PTHREAD_INHERIT_SCHED in FreeBSD's <pthread.h>: whether a created
+   thread takes the attribute's scheduling or its creator's. */
+enum { SCHED_EXPLICIT = 0, SCHED_INHERIT = 4 };
 
 /* SCHED_FIFO, SCHED_OTHER and SCHED_RR in FreeBSD's <sched.h>; libthr accepts only these three
    (_pthread_attr_setschedpolicy, thr_attr.c). The executable asks for 1. */
@@ -52,6 +62,17 @@ typedef struct {
     pthread_t host;
     uint32_t signal_mask[4]; /* the guest's blocked signals, a FreeBSD sigset_t (_sigprocmask) */
     int32_t priority;        /* scePthreadGetprio / scePthreadSetprio */
+    /* scePthreadExit: where the thread's host side resumes (a __builtin_setjmp buffer, five words),
+       and the value the thread ends with. */
+    void *exit_point[5];
+    int exit_point_set;
+    int exiting;             /* key destructors are running: a further exit is refused */
+    void *exit_value;
+    /* Joining and detaching, under join_lock. */
+    int detached;            /* created detached, or detached since */
+    int joining;             /* a thread waits to join it */
+    int ended;               /* its entry has returned or it has exited */
+    int joined;              /* a join collected it */
 } guest_thread;
 
 typedef struct {
@@ -64,6 +85,8 @@ typedef struct {
     int sched_policy;
     int has_sched_priority;
     int32_t sched_priority;
+    int has_inherit_sched;
+    int inherit_sched;      /* SCHED_INHERIT or SCHED_EXPLICIT */
     uint64_t affinity;      /* the CPU mask scePthreadAttrSetaffinity recorded, 0: none */
 } guest_attr;
 
@@ -71,14 +94,31 @@ static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
 
 /* The executable's TLS template copied into a fresh block, the thread pointer just above it
    (x86-64 variant II), the pointer's first word pointing to itself. */
+enum { TLS_CONTROL_BLOCK_BYTES = 4096, TLS_MINIMUM_ALIGNMENT = 16 };
+
+static uint64_t tls_block_alignment(void)
+{
+    return rt_process.tls_align > TLS_MINIMUM_ALIGNMENT
+           ? rt_process.tls_align : TLS_MINIMUM_ALIGNMENT;
+}
+
+uint64_t rt_tls_block_size(void)
+{
+    const uint64_t align = tls_block_alignment();
+    if (align > SIZE_MAX || rt_process.tls_memsz > SIZE_MAX - (align - 1)) return UINT64_MAX;
+    const uint64_t size = (rt_process.tls_memsz + align - 1) / align * align;
+    return size > SIZE_MAX - TLS_CONTROL_BLOCK_BYTES ? UINT64_MAX : size;
+}
+
 void *rt_tls_block_create(void)
 {
-    const uint64_t align = rt_process.tls_align > 16 ? rt_process.tls_align : 16;
-    const uint64_t size = (rt_process.tls_memsz + align - 1) / align * align;
-    enum { CONTROL_BLOCK = 4096 };
-    unsigned char *block = aligned_alloc(align, size + CONTROL_BLOCK);
-    if (!block) return NULL;
-    memset(block, 0, size + CONTROL_BLOCK);
+    const uint64_t align = tls_block_alignment();
+    const uint64_t size = rt_tls_block_size();
+    if (size == UINT64_MAX) return NULL;
+    void *allocation = NULL;
+    if (posix_memalign(&allocation, (size_t)align, (size_t)size + TLS_CONTROL_BLOCK_BYTES)) return NULL;
+    unsigned char *block = allocation;
+    memset(block, 0, size + TLS_CONTROL_BLOCK_BYTES);
     unsigned char *tp = block + size;
     if (rt_process.tls_filesz) memcpy(tp - size, rt_process.tls_image, rt_process.tls_filesz);
     *(uint64_t *)tp = (uint64_t)(uintptr_t)tp;
@@ -97,14 +137,15 @@ static guest_thread *thread_objects;
 static uint32_t thread_objects_used;
 static pthread_mutex_t thread_objects_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* A zeroed thread object below 2^40. Objects are never reused: no call ends a thread's object yet. */
+/* A zeroed thread object below 2^40. Objects are never reused, so a collected thread's handle still
+   names its object, which answers ESRCH (join_thread). */
 static guest_thread *thread_object_new(const char *caller)
 {
     pthread_mutex_lock(&thread_objects_lock);
     if (!thread_objects) {
         void *const want = (void *)(uintptr_t)THREAD_OBJECTS_BASE;
-        void *const got = mmap(want, THREAD_OBJECT_SLOTS * sizeof(guest_thread), PROT_READ | PROT_WRITE,
-                               MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        void *const got = rt_map_anonymous_at(want, THREAD_OBJECT_SLOTS * sizeof(guest_thread),
+                                              PROT_READ | PROT_WRITE);
         if (got != want) rt_fatal(caller, "the host cannot reserve the thread objects' range below 2^40");
         thread_objects = got;
     }
@@ -115,6 +156,7 @@ static guest_thread *thread_object_new(const char *caller)
 }
 
 static _Thread_local guest_thread *current;
+static pthread_mutex_t join_lock = PTHREAD_MUTEX_INITIALIZER; /* the join and detach fields */
 
 /* Thread priorities. A PS4 executable may declare its main thread's settings in its process
    parameters (sceUserMainThreadPriority and the like, which homebrew titles define); without them
@@ -157,6 +199,8 @@ static guest_thread *self_for(const char *caller)
 }
 
 static guest_thread *thread_self(void) { return self_for("scePthreadSelf"); }
+
+int32_t rt_thread_current_priority(const char *caller) { return self_for(caller)->priority; }
 static guest_thread *posix_thread_self(void) { return self_for("pthread_self"); }
 
 /* Two thread variables name the same thread when they hold the same object pointer. Non-zero when
@@ -176,15 +220,15 @@ static int kernel_sched_yield(void)
     return 0;
 }
 
-/* scePthreadYield asks for the same yield, but its PS4-visible signature is not established:
-   FreeBSD's pthread_yield(3) returns nothing, Linux's returns an int, and no PS4-specific public
-   source or guest call site we can cite says which one the guest sees. Returning would leave the
-   value a caller might read undefined, so the call stops by name. It is registered with
-   RT_SYSLIB_UNRESOLVED: a boot that reaches it names the call, and coverage leaves the import
-   unchecked, since a diagnostic is not an implementation. */
-static void thread_yield(void)
+/* scePthreadYield asks for the same yield. Its PS4-visible signature is not published: FreeBSD's
+   pthread_yield(3) returns nothing, Linux's returns an int (0). Answering 0 is right under either:
+   a caller of a function that returns nothing never reads the result, and 0 is the int version's
+   success. The game's own calls agree: every one of its 26 direct call sites (in 0x01c56290,
+   0x01c58670, 0x0148ca00, 0x02569c30 and others, and the four through its wrapper at 0x0247f970)
+   overwrites or ignores the result register right after the call. */
+static int thread_yield(void)
 {
-    rt_fatal("scePthreadYield", "the PS4 return behaviour is not established by public evidence");
+    return kernel_sched_yield();
 }
 
 /* Allocates an attribute object and stores it in the variable; ENOMEM when it cannot (POSIX
@@ -210,12 +254,16 @@ static int attr_destroy(guest_attr **attr)
     return 0;
 }
 
-/* Calls entry(argument) on the guest stack, with the System V convention the guest uses, and returns
-   its result: rt_thread_call(entry, argument, stack_top). */
-void *rt_thread_call(void *(*entry)(void *), void *argument, void *stack_top);
+/* rt_thread_call(entry, argument, stack_top), declared in runtime/process.h: calls entry(argument) on
+   the guest stack, with the System V convention the guest uses, and returns its result. */
+#if defined(__APPLE__) && defined(__MACH__)
+#define RT_THREAD_CALL_SYMBOL "_rt_thread_call"
+#else
+#define RT_THREAD_CALL_SYMBOL "rt_thread_call"
+#endif
 __asm__(".text\n"
-        ".globl rt_thread_call\n"
-        "rt_thread_call:\n"
+        ".globl " RT_THREAD_CALL_SYMBOL "\n"
+        RT_THREAD_CALL_SYMBOL ":\n"
         "  push %rbp\n  push %rbx\n  push %r12\n  push %r13\n  push %r14\n  push %r15\n"
         "  mov %rsp, %r12\n"
         "  mov %rdx, %rsp\n"
@@ -228,7 +276,13 @@ __asm__(".text\n"
 
 /* A created thread's host side: the guest's thread pointer in GS, the boot's timeout and
    worker-stop signals left to the main thread, the thread registered for scePthreadSelf, then the
-   guest's entry on its own stack. A return from the entry ends the thread (POSIX). */
+   guest's entry on its own stack. A return from the entry ends the thread (POSIX), after its key
+   destructors (runtime/syslib/kernel_key.c); so does scePthreadExit, which comes back here by a
+   jump rather than unwinding the guest's frames, which were not built for the host's unwinder. The
+   jump is the compiler's __builtin_setjmp/__builtin_longjmp, not the C library's longjmp: a
+   hardened C library (_FORTIFY_SOURCE, on by default in some distributions' compilers) checks
+   that longjmp goes to an older frame of the same stack and aborts the process when it comes from
+   the guest's stack, which is a separate mapping. */
 static void *thread_start(void *raw)
 {
     guest_thread *t = raw;
@@ -237,26 +291,78 @@ static void *thread_start(void *raw)
     sigaddset(&main_only, SIGALRM);
     sigaddset(&main_only, SIGUSR1);
     pthread_sigmask(SIG_BLOCK, &main_only, NULL);
+#if defined(__APPLE__) && defined(__MACH__)
+    rt_guest_pointer_bind(t->tls);
+    pthread_mutex_lock(&join_lock); /* Serialize the startup label with concurrent guest renames. */
+    if (t->name[0]) (void)pthread_setname_np(t->name);
+    pthread_mutex_unlock(&join_lock);
+#else
     if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)(uintptr_t)t->tls))
         rt_fatal("scePthreadCreate", "the host refused the new thread's thread pointer");
+#endif
     current = t;
     /* The System V convention wants the stack 16-byte aligned at the call. */
     enum { STACK_TOP_RESERVE = 64, STACK_ALIGN = 16 };
     const uintptr_t top = ((uintptr_t)t->stack + t->stack_size - STACK_TOP_RESERVE) & ~(uintptr_t)(STACK_ALIGN - 1);
-    rt_thread_call(t->entry, t->argument, (void *)top);
-    return NULL;
+    t->exit_point_set = 1;
+    if (!__builtin_setjmp(t->exit_point)) t->exit_value = rt_thread_call(t->entry, t->argument, (void *)top);
+    t->exiting = 1;
+    rt_thread_keys_exit((void *)top);
+#if defined(__APPLE__) && defined(__MACH__)
+    rt_guest_pointer_clear();
+#endif
+    pthread_mutex_lock(&join_lock);
+    t->ended = 1;
+    pthread_mutex_unlock(&join_lock);
+    return t->exit_value;
 }
+
+/* scePthreadExit(void *value): ends the calling thread with value, as a return from its entry
+   would: the value kept for a join, then the thread's key destructors, then the end (FreeBSD libthr's
+   _pthread_exit; shadPS4's posix_pthread_exit). An exit from inside a key destructor is refused
+   there, and stops by name here; so does an exit from the main thread, which the runtime runs the
+   boot on. */
+static _Noreturn void exit_thread(const char *fn, void *value)
+{
+    guest_thread *t = current;
+    if (!t || !t->exit_point_set) rt_fatal(fn, "an exit from the main thread is not modelled");
+    if (t->exiting) rt_fatal(fn, "an exit from inside a key destructor");
+    t->exit_value = value;
+    __builtin_longjmp(t->exit_point, 1);
+}
+
+static _Noreturn void thread_exit(void *value) { exit_thread("scePthreadExit", value); }
+/* pthread_exit (libScePosix) is the same end under its POSIX name. The executable's one call
+   (0x004667e3) ends a worker of its job threads with an int value widened to a pointer. */
+static _Noreturn void posix_thread_exit(void *value) { exit_thread("pthread_exit", value); }
+RT_SYSLIB("libkernel", scePthreadExit, thread_exit);
+RT_SYSLIB("libScePosix", pthread_exit, posix_thread_exit);
 
 /* scePthreadCreate(thread, attr, entry, argument, name), as the executable's thread wrapper calls
    it: an attribute with a stack size and a detach state, a name. The guest runs on a host thread
    with its own guest stack and TLS block. What the runtime does not know stops by name: a missing
    attribute or stack size (the PS4 defaults), a stack address the guest supplies, and the error
    values. The scheduling policy is recorded but the host schedules the thread: priorities are not
-   modelled. */
-static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument,
-                         const char *name)
+   modelled.
+
+   pthread_create_name_np (libScePosix) takes the same arguments and is the same creation. The
+   executable's only call is its thread helper (0x00838840, four callers), which builds a POSIX
+   attribute with a detach state and, when it has one, a stack size, and treats any result other
+   than 0 as an error. Its stops name the POSIX function. */
+/* The new thread's priority: its creator's under libthr's default PTHREAD_INHERIT_SCHED, the
+   attribute's under PTHREAD_EXPLICIT_SCHED. Explicit scheduling without a priority set would take
+   the attribute's default priority, which is not established. */
+static int32_t created_priority(const char *fn, const guest_attr *a)
 {
-    static const char fn[] = "scePthreadCreate";
+    if (!a->has_inherit_sched || a->inherit_sched == SCHED_INHERIT)
+        return current ? current->priority : SCE_KERNEL_PRIO_FIFO_DEFAULT;
+    if (!a->has_sched_priority) rt_fatal(fn, "explicit scheduling without a priority: the default is not established");
+    return a->sched_priority;
+}
+
+static int create_named_thread(const char *fn, guest_thread **thread, guest_attr **attr, void *(*entry)(void *),
+                               void *argument, const char *name)
+{
     if (!thread || !entry) rt_fatal(fn, "no thread variable or entry: the error value is not established");
     const guest_attr *a = attr ? *attr : NULL;
     if (!a) rt_fatal(fn, "no attribute object: the PS4 default stack size is not established");
@@ -265,7 +371,11 @@ static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry
     const int detach_state = rt_thread_attr_detach_state((void *const *)attr, fn); /* stops when not set */
     guest_thread *t = thread_object_new(fn);
     t->stack_size = a->stack_size;
-    t->stack = mmap(NULL, t->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    int stack_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_STACK
+    stack_flags |= MAP_STACK;
+#endif
+    t->stack = mmap(NULL, t->stack_size, PROT_READ | PROT_WRITE, stack_flags, -1, 0);
     if (t->stack == MAP_FAILED) rt_fatal(fn, "the host cannot map the thread's stack");
     t->tls = rt_tls_block_create();
     if (!t->tls) rt_fatal(fn, "the host has no memory for the thread's TLS block");
@@ -274,7 +384,8 @@ static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry
     if (name) strncpy(t->name, name, sizeof t->name - 1);
     t->affinity = a->affinity; /* the attribute's CPU mask, if it has one */
     if (current) memcpy(t->signal_mask, current->signal_mask, sizeof t->signal_mask); /* inherited (POSIX) */
-    t->priority = current ? current->priority : SCE_KERNEL_PRIO_FIFO_DEFAULT; /* inherited (libthr default) */
+    t->priority = created_priority(fn, a);
+    t->detached = detach_state == DETACH_DETACHED;
     pthread_attr_t host;
     pthread_attr_init(&host);
     if (detach_state == DETACH_DETACHED) pthread_attr_setdetachstate(&host, PTHREAD_CREATE_DETACHED);
@@ -285,15 +396,57 @@ static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry
     return 0;
 }
 
+static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument,
+                         const char *name)
+{
+    return create_named_thread("scePthreadCreate", thread, attr, entry, argument, name);
+}
+
+/* pthread_create (libScePosix): the same creation without a name. The executable's two calls
+   (0x00466674, 0x004666df) pass a detached attribute with a stack size and a priority set by
+   pthread_attr_setschedparam, and treat any result other than 0 as an error. */
+static int posix_create(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument)
+{
+    return create_named_thread("pthread_create", thread, attr, entry, argument, NULL);
+}
+
+static int posix_create_name_np(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument,
+                                const char *name)
+{
+    return create_named_thread("pthread_create_name_np", thread, attr, entry, argument, name);
+}
+
 /* The CPU set a thread may run on. The executable sets it once, right after creating the thread,
    within 0x3f; the runtime records it and leaves scheduling to the host (which CPUs the host has
-   says nothing about the PS4's). An empty mask's answer is not established and stops by name. */
+   says nothing about the PS4's). An empty mask's answer is not established and stops by name.
+
+   No thread answers ESRCH, as libthr does for a thread it cannot find (_thr_find_thread). The job
+   system's set-up (0x01bfa260) sets a mask on each of its twelve worker slots, empty ones (a null
+   handle) included, and discards every answer. */
 static int set_affinity(guest_thread *thread, uint64_t mask)
 {
     static const char fn[] = "scePthreadSetaffinity";
-    if (!thread) rt_fatal(fn, "no thread: the error value is not established");
+    if (!thread) return SCE_KERNEL_ERROR(BSD_ESRCH);
     if (!mask) rt_fatal(fn, "an empty CPU mask: the answer is not established");
     thread->affinity = mask;
+    return 0;
+}
+
+/* The CPU set answered for a thread or attribute the guest gave no mask: the six CPUs 0 to 5. It is
+   the mask the executable's own thread set-up gives each thread (docs/runtime-syscalls.md) and
+   PS4Recomp's default (facts only); shadPS4 answers the host thread's set. The maintainer's ruling
+   of 2026-11-11 replaced the earlier all ones; the console's own main-thread mask is not measured. */
+#define DEFAULT_CPU_MASK UINT64_C(0x3f)
+
+/* scePthreadGetaffinity(thread, uint64_t *mask): the thread's CPU set, imported by the bundled
+   file library (libSceFios2.elf). A mask the guest set is answered back; a thread nobody set one
+   on answers DEFAULT_CPU_MASK. No thread answers ESRCH, as for the set; no variable stops by
+   name. */
+static int get_affinity(guest_thread *thread, uint64_t *mask)
+{
+    if (!thread) return SCE_KERNEL_ERROR(BSD_ESRCH);
+    if (!mask) rt_fatal("scePthreadGetaffinity", "no variable for the mask: the error value is not established");
+    *mask = thread->affinity ? thread->affinity : DEFAULT_CPU_MASK;
     return 0;
 }
 
@@ -303,11 +456,13 @@ static int sce_attr_destroy(guest_attr **attr) { return sce(attr_destroy(attr));
 /* Copies a running thread's attributes into an initialised attribute object. The copy replaces
    everything the object held (libthr's pthread_attr_get_np copies the whole attribute block), so a
    detach state set on it before is dropped: the thread's own detach state is one the system
-   supplies, and the runtime does not know it. */
+   supplies, and the runtime does not know it. The thread's CPU mask comes along (0 when the guest
+   never set one), so scePthreadAttrGetaffinity on the copy answers as scePthreadGetaffinity does. */
 static int attr_get(guest_thread *thread, guest_attr **attr)
 {
     if (!thread || !attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
-    **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size};
+    **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size,
+                          .affinity = thread->affinity};
     return 0;
 }
 
@@ -377,7 +532,7 @@ int rt_thread_attr_detach_state(void *const *attr, const char *caller)
 RT_SYSLIB("libkernel", scePthreadSelf, thread_self);
 RT_SYSLIB("libkernel", scePthreadEqual, thread_equal);
 RT_SYSLIB("libkernel", sched_yield, kernel_sched_yield);
-RT_SYSLIB_UNRESOLVED("libkernel", scePthreadYield, thread_yield);
+RT_SYSLIB("libkernel", scePthreadYield, thread_yield);
 RT_SYSLIB("libkernel", scePthreadAttrInit, sce_attr_init);
 RT_SYSLIB("libkernel", scePthreadAttrDestroy, sce_attr_destroy);
 RT_SYSLIB("libkernel", scePthreadAttrGet, attr_get);
@@ -385,7 +540,10 @@ RT_SYSLIB("libkernel", scePthreadAttrSetdetachstate, sce_attr_set_detach_state);
 RT_SYSLIB("libkernel", scePthreadAttrSetstacksize, sce_attr_set_stack_size);
 RT_SYSLIB("libkernel", scePthreadAttrSetschedpolicy, sce_attr_set_sched_policy);
 RT_SYSLIB("libkernel", scePthreadCreate, create_thread);
+RT_SYSLIB("libScePosix", pthread_create_name_np, posix_create_name_np);
+RT_SYSLIB("libScePosix", pthread_create, posix_create);
 RT_SYSLIB("libkernel", scePthreadSetaffinity, set_affinity);
+RT_SYSLIB("libkernel", scePthreadGetaffinity, get_affinity);
 
 /* libScePosix: the same calls under their POSIX names, returning the errno values themselves.
    pthread_self has no error return, so it answers exactly as scePthreadSelf does. */
@@ -405,14 +563,17 @@ RT_SYSLIB("libScePosix", pthread_attr_setstacksize, posix_attr_set_stack_size);
    No signal is delivered to the guest yet, so the runtime keeps each guest thread's mask, a new
    thread starting with its creator's, and does not apply it to the host thread. Its errors are
    reported through the guest's errno, which the runtime does not model, so an unknown how stops
-   by name. */
+   by name.
+
+   sigprocmask, which libc.elf imports from libkernel too (thirteen calls; +0x53f84 blocks
+   everything with SIG_SETMASK and a set from sigfillset, keeping the old mask), is the same call
+   under its POSIX name: FreeBSD's libc sigprocmask is the system call itself. */
 enum { SIG_HOW_BLOCK = 1, SIG_HOW_UNBLOCK = 2, SIG_HOW_SETMASK = 3 };
 #define BSD_SIGKILL_BIT (1u << (9 - 1))
 #define BSD_SIGSTOP_BIT (1u << (17 - 1))
 
-static int signal_proc_mask(int how, const uint32_t *set, uint32_t *old)
+static int change_signal_mask(const char *fn, int how, const uint32_t *set, uint32_t *old)
 {
-    static const char fn[] = "_sigprocmask";
     guest_thread *const self = self_for(fn);
     if (old) memcpy(old, self->signal_mask, sizeof self->signal_mask);
     if (!set) return 0;
@@ -427,7 +588,23 @@ static int signal_proc_mask(int how, const uint32_t *set, uint32_t *old)
     self->signal_mask[0] &= ~(BSD_SIGKILL_BIT | BSD_SIGSTOP_BIT);
     return 0;
 }
+static int signal_proc_mask(int how, const uint32_t *set, uint32_t *old) { return change_signal_mask("_sigprocmask", how, set, old); }
+static int posix_signal_proc_mask(int how, const uint32_t *set, uint32_t *old) { return change_signal_mask("sigprocmask", how, set, old); }
 RT_SYSLIB("libkernel", _sigprocmask, signal_proc_mask);
+RT_SYSLIB("libkernel", sigprocmask, posix_signal_proc_mask);
+
+/* sigfillset(sigset_t *set): every signal in the set, FreeBSD libc's sigsetops.c (each of the four
+   words all ones) and POSIX; it answers 0. libc.elf's one call (+0x53f73) fills a static set for
+   sigprocmask. POSIX defines no error for it and FreeBSD reads no further than the set, so a
+   missing set stops by name. */
+static int signal_fill_set(uint32_t *set)
+{
+    if (!set) rt_fatal("sigfillset", "no set: the answer is not established");
+    for (int i = 0; i < 4; i++) set[i] = ~0u;
+    return 0;
+}
+RT_SYSLIB("libkernel", sigfillset, signal_fill_set);
+
 
 /* scePthreadGetprio(thread, int32_t *priority) and scePthreadSetprio(thread, priority), as the
    OpenOrbis homebrew SDK's libkernel.h declares them. The executable's only reader (0x02a3b59d)
@@ -466,10 +643,9 @@ RT_SYSLIB("libkernel", scePthreadSetprio, set_priority);
    itself with scePthreadSetprio (0x0111ab46). The runtime records it on the attribute. A variable
    holding no attribute is EINVAL (libthr); a missing param and a priority outside 256..767 stop by
    name (their answers are not established). */
-static int sce_attr_set_sched_param(guest_attr **attr, const int32_t *param)
+static int attr_set_sched_param(const char *fn, guest_attr **attr, const int32_t *param)
 {
-    static const char fn[] = "scePthreadAttrSetschedparam";
-    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!attr || !*attr) return BSD_EINVAL;
     if (!param) rt_fatal(fn, "no param: the answer is not established");
     if (*param < PRIORITY_HIGHEST_SEEN || *param > PRIORITY_LOWEST_SEEN)
         rt_fatal(fn, "a priority outside 256..767, the range the executable uses: the answer is not established");
@@ -477,7 +653,20 @@ static int sce_attr_set_sched_param(guest_attr **attr, const int32_t *param)
     (*attr)->sched_priority = *param;
     return 0;
 }
+
+static int sce_attr_set_sched_param(guest_attr **attr, const int32_t *param)
+{
+    return sce(attr_set_sched_param("scePthreadAttrSetschedparam", attr, param));
+}
+/* pthread_attr_setschedparam (libScePosix): the same, returning the error number. The executable's
+   job threads (0x00466572, 0x004666c9) set priorities from a table of 256, 650, 700, 750 and 767
+   (0x02fc5480), the range the SCE name accepts. */
+static int posix_attr_set_sched_param(guest_attr **attr, const int32_t *param)
+{
+    return attr_set_sched_param("pthread_attr_setschedparam", attr, param);
+}
 RT_SYSLIB("libkernel", scePthreadAttrSetschedparam, sce_attr_set_sched_param);
+RT_SYSLIB("libScePosix", pthread_attr_setschedparam, posix_attr_set_sched_param);
 
 /* scePthreadAttrSetaffinity(attr, uint64_t mask): the CPU set of a thread created with the
    attribute (OpenOrbis' libkernel.h declares it with a 64-bit mask). The executable's thread wrapper
@@ -492,3 +681,173 @@ static int sce_attr_set_affinity(guest_attr **attr, uint64_t mask)
     return 0;
 }
 RT_SYSLIB("libkernel", scePthreadAttrSetaffinity, sce_attr_set_affinity);
+
+/* scePthreadAttrGetaffinity(attr, uint64_t *mask): the attribute's CPU set, imported by the bundled
+   libc.elf, whose thread-count probe (+0x81a80) asks it for a copy of the main thread's attributes
+   and counts the set bits of the eight-byte answer (docs/runtime-syscalls.md). A mask set with
+   scePthreadAttrSetaffinity, or copied from a thread by scePthreadAttrGet, is answered back. Without
+   one the answer is DEFAULT_CPU_MASK, as from scePthreadGetaffinity, so the probe counts six CPUs.
+   A variable holding no attribute is EINVAL, as for the setter; no variable for the mask stops by
+   name. */
+static int sce_attr_get_affinity(guest_attr **attr, uint64_t *mask)
+{
+    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!mask) rt_fatal("scePthreadAttrGetaffinity", "no variable for the mask: the error value is not established");
+    *mask = (*attr)->affinity ? (*attr)->affinity : DEFAULT_CPU_MASK;
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadAttrGetaffinity, sce_attr_get_affinity);
+
+/* scePthreadAttrSetinheritsched(attr, inherit): whether a thread created with the attribute takes
+   its creator's scheduling (PTHREAD_INHERIT_SCHED, 4, libthr's default) or the attribute's
+   (PTHREAD_EXPLICIT_SCHED, 0), FreeBSD's <pthread.h> numbers. libSceFios2's thread helper
+   (+0x2eaa2) asks for explicit scheduling and then sets the priority with
+   scePthreadAttrSetschedparam, so its threads start at that priority. A variable holding no
+   attribute is EINVAL (libthr's _pthread_attr_setinheritsched). Another value is ENOTSUP in libthr;
+   as for the scheduling policy, that refusal's SCE value is not established, so it stops by name. */
+static int sce_attr_set_inherit_sched(guest_attr **attr, int inherit)
+{
+    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (inherit != SCHED_INHERIT && inherit != SCHED_EXPLICIT)
+        rt_fatal("scePthreadAttrSetinheritsched", "a value other than PTHREAD_INHERIT_SCHED and PTHREAD_EXPLICIT_SCHED");
+    (*attr)->has_inherit_sched = 1;
+    (*attr)->inherit_sched = inherit;
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadAttrSetinheritsched, sce_attr_set_inherit_sched);
+
+/* Whether thread is one of the runtime's thread objects: libthr finds a thread in its list and
+   answers ESRCH for anything else (_thr_find_thread). */
+static int known_thread(const guest_thread *thread)
+{
+    pthread_mutex_lock(&thread_objects_lock);
+    const int known = thread_objects && thread >= thread_objects && thread < thread_objects + thread_objects_used &&
+                      (uintptr_t)((const char *)thread - (const char *)thread_objects) % sizeof *thread == 0;
+    pthread_mutex_unlock(&thread_objects_lock);
+    return known;
+}
+
+/* Whether the system has freed the thread: joined, or detached and ended (libthr then removes it
+   from its list, so it is no longer found). Called under join_lock. */
+static int collected(const guest_thread *thread) { return thread->joined || (thread->detached && thread->ended); }
+
+/* scePthreadJoin(thread, void **value) and scePthreadDetach(thread), FreeBSD libthr's
+   pthread_join and pthread_detach (thr_join.c, thr_detach.c; the OpenOrbis libkernel.h shapes).
+   The executable's join (0x02a3b6c5) tells ESRCH, EDEADLK and EINVAL apart; the other callers
+   (libc.elf +0x6130 and +0x6174, libSceFios2 +0x2ebde, the POSIX pthread_join at 0x00838793 and
+   0x008387f3) compare the answer with 0. In libthr's order:
+   - join: no thread is EINVAL; the calling thread itself EDEADLK; a thread it does not know, or one
+     it has collected, ESRCH; a detached thread EINVAL; one another thread waits for ENOTSUP. It then
+     waits for the end, stores the exit value through a non-null value, and collects the thread.
+   - detach: no thread is EINVAL; an unknown or collected one ESRCH; a detached one, or one a thread
+     waits for, EINVAL. A detached thread is collected when it ends.
+   The main thread, on which the runtime runs the boot, stops by name: its end is not modelled. */
+static int join_thread(const char *fn, guest_thread *thread, void **value)
+{
+    if (!thread) return BSD_EINVAL;
+    if (thread == current) return BSD_EDEADLK;
+    if (!known_thread(thread)) return BSD_ESRCH;
+    if (!thread->entry) rt_fatal(fn, "a join of the main thread: its end is not modelled");
+    pthread_mutex_lock(&join_lock);
+    const int refused = collected(thread) ? BSD_ESRCH : thread->detached ? BSD_EINVAL : thread->joining ? BSD_ENOTSUP : 0;
+    if (!refused) thread->joining = 1;
+    pthread_mutex_unlock(&join_lock);
+    if (refused) return refused;
+    if (pthread_join(thread->host, NULL)) rt_fatal(fn, "the host could not join the thread");
+    pthread_mutex_lock(&join_lock);
+    thread->joining = 0;
+    thread->joined = 1;
+    pthread_mutex_unlock(&join_lock);
+    if (value) *value = thread->exit_value;
+    return 0;
+}
+
+static int detach_thread(const char *fn, guest_thread *thread)
+{
+    if (!thread) return BSD_EINVAL;
+    if (!known_thread(thread)) return BSD_ESRCH;
+    if (!thread->entry) rt_fatal(fn, "a detach of the main thread: its end is not modelled");
+    pthread_mutex_lock(&join_lock);
+    const int refused = collected(thread) ? BSD_ESRCH : thread->detached || thread->joining ? BSD_EINVAL : 0;
+    if (!refused) {
+        thread->detached = 1;
+        if (pthread_detach(thread->host)) rt_fatal(fn, "the host could not detach the thread");
+    }
+    pthread_mutex_unlock(&join_lock);
+    return refused;
+}
+
+static int sce_join(guest_thread *thread, void **value) { return sce(join_thread("scePthreadJoin", thread, value)); }
+static int sce_detach(guest_thread *thread) { return sce(detach_thread("scePthreadDetach", thread)); }
+static int posix_join(guest_thread *thread, void **value) { return join_thread("pthread_join", thread, value); }
+RT_SYSLIB("libkernel", scePthreadJoin, sce_join);
+RT_SYSLIB("libkernel", scePthreadDetach, sce_detach);
+RT_SYSLIB("libScePosix", pthread_join, posix_join);
+
+/* scePthreadOnce(once, init): runs init exactly once for the once variable, FreeBSD libthr's
+   pthread_once (thr_once.c). The variable's first int is its state: 0 never done (the static
+   initializer), 1 done, 2 in progress, 3 in progress with waiters. A caller that finds it in
+   progress waits until it is done; another state is EINVAL. libc.elf's five calls (+0xad02,
+   +0x1b292, +0x54ecb and two tail calls) pass a static variable and a routine. Cancellation is not
+   modelled (nothing cancels a guest thread), so a routine always runs to its end. */
+enum { ONCE_NEVER_DONE = 0, ONCE_DONE = 1, ONCE_IN_PROGRESS = 2, ONCE_WAIT = 3 };
+static pthread_mutex_t once_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t once_done = PTHREAD_COND_INITIALIZER;
+
+static int thread_once(int32_t *once, void (*init)(void))
+{
+    if (!once || !init) rt_fatal("scePthreadOnce", "no once variable or routine: the answer is not established");
+    pthread_mutex_lock(&once_lock);
+    for (;;) {
+        int32_t state = __atomic_load_n(once, __ATOMIC_ACQUIRE);
+        if (state == ONCE_DONE) break;
+        if (state == ONCE_NEVER_DONE) {
+            __atomic_store_n(once, ONCE_IN_PROGRESS, __ATOMIC_RELAXED);
+            pthread_mutex_unlock(&once_lock);
+            init();
+            pthread_mutex_lock(&once_lock);
+            __atomic_store_n(once, ONCE_DONE, __ATOMIC_RELEASE);
+            pthread_cond_broadcast(&once_done);
+            break;
+        }
+        if (state != ONCE_IN_PROGRESS && state != ONCE_WAIT) {
+            pthread_mutex_unlock(&once_lock);
+            return SCE_KERNEL_ERROR(BSD_EINVAL);
+        }
+        __atomic_store_n(once, ONCE_WAIT, __ATOMIC_RELAXED);
+        pthread_cond_wait(&once_done, &once_lock);
+    }
+    pthread_mutex_unlock(&once_lock);
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadOnce, thread_once);
+
+/* scePthreadRename(thread, name): the thread's name, as OpenOrbis' libkernel.h declares it and
+   libthr's pthread_set_name_np records it (shadPS4 binds the name to the same, facts only). The
+   executable's job threads rename themselves with it (a tail call at 0x00466834). The runtime keeps
+   the first 31 bytes, as for the name scePthreadCreate takes, names the host thread with the first
+   15 (the host's limit; debuggers and the host's thread list show it), and answers 0. A thread the
+   runtime does not know or has collected, and a missing name, stop by name (their answers are not
+   established). */
+static int rename_thread(guest_thread *thread, const char *name)
+{
+    static const char fn[] = "scePthreadRename";
+    if (!thread || !known_thread(thread)) rt_fatal(fn, "a thread the runtime does not know: the answer is not established");
+    if (!name) rt_fatal(fn, "no name: the answer is not established");
+    pthread_mutex_lock(&join_lock);
+    if (collected(thread)) rt_fatal(fn, "a thread that has been collected: the answer is not established");
+    strncpy(thread->name, name, sizeof thread->name - 1);
+    thread->name[sizeof thread->name - 1] = 0;
+    char host_name[16];
+    memcpy(host_name, thread->name, sizeof host_name - 1);
+    host_name[sizeof host_name - 1] = 0;
+#if defined(__APPLE__) && defined(__MACH__)
+    /* Darwin can label only the calling host thread; the guest's name is always retained. */
+    if (!thread->ended && thread == current) (void)pthread_setname_np(host_name);
+#else
+    if (!thread->ended) pthread_setname_np(thread == current ? pthread_self() : thread->host, host_name);
+#endif
+    pthread_mutex_unlock(&join_lock);
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadRename, rename_thread);
