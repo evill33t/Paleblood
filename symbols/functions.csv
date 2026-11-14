@@ -72,16 +72,22 @@ address,size,name,system,status,notes
 0x01389df0,19,frame_timing_task_entry_count_01389df0,frame_timing,edge-verified,"Number of the dispatcher's registered task entries (vector of 0x88-byte entries), cut to 32 bits"
 0x01389e10,59,frame_timing_task_entry_at_01389e10,frame_timing,edge-verified,Registered task entry at an index; null for a negative index or one past the end (unsigned count)
 0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step"
+0x0138d060,82,input_key_mapper_alternate_input_0138d060,input,edge-verified,"Key mapper: alternate input of a button index, std::map<int32,int32> find on the map at +0x48 (head +0x50); -1 when missing"
+0x01390ba0,82,input_key_mapper_button_index_01390ba0,input,edge-verified,"Key mapper: button index of a logical key, std::map<int32,int32> find on the map at +0x40 (head at +8); -1 when missing"
 0x013914a0,142,input_pad_slot_construct_013914a0,input,verified,"Pad slot constructor (vtable 0x056f1be0): label ""pad not set"", +0x24..+0x50 cleared, empty wide name at +0x50 (owns 1), +0x88 cleared"
+0x01391c60,442,input_key_assign_held_01391c60,input,edge-verified,"Key assign held: any combination of the key in the multimap at +0x38 whose four parts pass (key -1 passes; 0 pressed, 1 released, 2 analog > 0; other tests repeat the previous part)"
 0x01391e30,299,input_key_assign_pressed_01391e30,input,verified,"Key assign pressed: mapper (+0x28) button index; enabled +0x20; key state map +0x40 enabled and not suppressed; pressed bit, else alternate input in the held set"
 0x01391f60,215,input_key_assign_analog_value_01391f60,input,verified,"Key assign analog value: as the pressed query (no mapper null check), then the input state float at the button index; 0 otherwise"
 0x01398290,127,engine_fd4_handle_less_01398290,engine,edge-verified,"FD4 handle ordering: both references valid in the first's table and the same table; versions differ: refresh both (0x013e99b0); then first value < second (signed)"
 0x013983e0,192,input_key_assign_first_free_id_013983e0,input,verified,"Smallest id 0-7 that no assignment (id at +0x24) of table +0x38[table] uses, every entry visited per id; 0xffffffff when all taken"
+0x013994a0,87,input_held_set_contains_013994a0,input,edge-verified,"Held input set: std::map<int32,bool> find (head at +0x18); 1 when present with a nonzero flag, else 0"
 0x013a2a00,22,menu_named_resource_registry_find_013a2a00,menu,edge-verified,"Scaleform glue: while the named resource registry is active and has its table, the table finds the entry by name (0x013abad0); null otherwise"
 0x013a33c0,25,menu_named_resource_registry_release_013a33c0,menu,edge-verified,"Scaleform glue: while the named resource registry is active and has its table, the table lets go of a non-null entry (0x013abd30)"
 0x013d3520,87,frame_timing_task_013d3520,frame_timing,verified,per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it
 0x013d4810,86,frame_timing_item_update_013d4810,frame_timing,edge-verified,"Brings the item's group up to date, then switches the item on or off when its requested enabled byte differs; an enabled item is switched on again"
 0x013d5440,346,frame_timing_part_0x10_update_013d5440,frame_timing,edge-verified,"Per-frame task part +0x10: for seconds > 0 steps the source, flags an idle generator, then fills an output buffer (switch on) or steps into a freed scratch buffer"
+0x013d6880,41,frame_timing_listener_take_owner_013d6880,frame_timing,edge-verified,"Listener and its list's owner: with an owner and no binding at +0x50, stores what its vtable slot 6 gives"
+0x013d68b0,105,frame_timing_listener_take_resource_013d68b0,frame_timing,edge-verified,"Listener and a named resource: with the registry and a resource, an empty label (+0x58) takes the text of slot 7's label source (its slot 5); empty text: length 0, no wcslen"
 0x013daac0,96,frame_timing_listener_list_notify_013daac0,frame_timing,edge-verified,"Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call"
 0x013dab20,187,frame_timing_listener_list_prepare_013dab20,frame_timing,edge-verified,"Hands the list's owner (when set) to every listener, then the resource the named resource registry holds under the list's name"
 0x013e68f0,160,loading_path_table_find_013e68f0,loading,verified,"FD4 hashed table find by path key: hash (x*0x89, ASCII letters folded, backslash as slash) cached in the key, bucket chain at +0x58, compare 0x02db46f0"
@@ -163,6 +169,7 @@ address,size,name,system,status,notes
 0x014758a0,90,render_set_border_color_base,render,edge-verified,Write GPU address bits 8-39 to TA_BC_BASE_ADDR after three-word admission; discard low and upper address bits and publish from the captured cursor.
 0x01475900,89,render_set_primitive_id_enable,render,edge-verified,Write the complete input byte to VGT_PRIMITIVEID_EN after three-word admission; preserve noncanonical byte values and publish from the captured cursor.
 0x01475960,109,render_set_multi_vgt_param,render,edge-verified,Emit IA_MULTI_VGT_PARAM from a primitive group size byte and the low PARTIAL_VS_WAVE_ON input bit; reserve three DWORDs with AL callback admission and captured cursor publication
+0x014759d0,83,render_set_gs_shader,render,edge-verified,Reserve 29 DWORDs; forward the opaque full register pointer including null to sceGnmSetGsShader; zero low-DWORD result adds 116 to the live cursor; AL callback admission reloads without capacity retry
 0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
 0x01475e10,173,render_emit_shader_preparation_range_01475e10,render,edge-verified,"ACQUIRE_MEM packet (7 words) for a memory range: coherence control from the cache actions, targets and top flag; reserve via the space callback"
 0x01476030,140,render_set_shader_stages_01476030,render,edge-verified,"SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first"
@@ -264,7 +271,7 @@ address,size,name,system,status,notes
 0x01693850,1175,ai_is_inside_direction,ai,verified,"Inside test: 3D distance <= limit and flat angle between direction and target line below half the cone (cos series)"
 0x0169acf0,114,ai_character_has_effect_state,ai,verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
 0x0169ad80,134,ai_character_gather_effect_states,ai,verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
-0x0169af00,126,ai_character_ready_check,ai,edge-verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
+0x0169af00,126,ai_character_ready_check,ai,verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
 0x0169fad0,155,ai_character_link_ids,ai,verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
 0x016a52b0,1936,ai_sight_test,ai,verified,"Sight test: nose distance at any angle, else eye distance by darkness from a moved-back eye point, begin distance, width/height cone, optional line-of-sight ray (layer 0x29); unseeable flag wins"
 0x016a5a50,43,ai_sight_query_reset_target,ai,edge-verified,"Sight query: target half reset (origin, no height or size, visibility 1, light, seeable)"
