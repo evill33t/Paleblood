@@ -30,6 +30,7 @@ FUNCTIONS = {  # name: (address, replacement symbol)
     'capture_trace_return_xmm2': ('0x00400180', 'return_xmm2'),
     'capture_trace_use_import': ('0x004002c0', 'use_import'),
     'capture_trace_thread_counter': ('0x004006c0', 'thread_counter'),
+    'capture_trace_store_reread': ('0x004008c0', 'store_reread'),
     'capture_trace_leaf_caller': ('0x00400880', 'leaf_caller'),
 }
 
@@ -64,6 +65,8 @@ int32_t thread_counter(void)
     int32_t *counter = *(int32_t **)(thread_pointer + offset);
     return ++*counter + BROKEN;
 }
+int32_t store_reread(float *p, uint8_t *flag)
+{ *p += *p; int32_t v = (int32_t)*p; *flag = v != 0; return v + *flag + BROKEN; }
 '''
 
 
