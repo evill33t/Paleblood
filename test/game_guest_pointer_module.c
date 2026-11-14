@@ -7,6 +7,8 @@
 #include "runtime/guest.h"
 #include "runtime/hooks.h"
 #include "runtime/host.h"
+#include <stdio.h>
+#include <stdlib.h>
 
 static void owned_replacement(void) {}
 const rt_hook_entry game_hooks[] = {
@@ -29,6 +31,17 @@ int rt_capture_hooks_prepare(unsigned char *image,uint64_t image_size,const rt_h
 {
     (void)image;(void)image_size;++peripheral_calls;
     for (size_t i=0;i<count;++i) targets[i]=(const void *)table[i].fn;
+    return 0;
+}
+/* The real prepare operation returns zero without reading a zero-family registry. */
+int rt_capture_families_prepare(unsigned char *image,uint64_t image_size,const rt_family_hook *table,
+                                size_t count)
+{
+    (void)image;(void)image_size;(void)table;++peripheral_calls;
+    if (count) {
+        fputs("owned guest-pointer fixture requires an empty family registry\n",stderr);
+        abort();
+    }
     return 0;
 }
 int rt_probes_install(unsigned char *image,uint64_t image_size)

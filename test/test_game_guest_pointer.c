@@ -95,7 +95,7 @@ int main(int argc,char **argv)
 #else
     OwnedTCB main_tcb,rebound;prepare(&main_tcb,0x1122);prepare(&rebound,0x3344);
     rt_guest_pointer_bind(&main_tcb);
-    CHECK(initialize(&host)==0 && hooks==1 && peripheral_calls()==5);
+    CHECK(initialize(&host)==0 && hooks==1 && peripheral_calls()==6);
     CHECK(pointer()==(unsigned char *)&main_tcb);
     if (!strcmp(argv[2],"wrong-slot")) return wrong_slot(pointer,module,&main_tcb);
     CHECK(strcmp(argv[2],"correct")==0);
